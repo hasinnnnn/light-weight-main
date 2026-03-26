@@ -395,21 +395,64 @@ def render_indicator_editor_view(indicator_id: str) -> None:
         st.caption("Indikator ini tidak punya parameter yang perlu diubah.")
 
     input_values: dict[str, Any] = {}
+    input_values: dict[str, Any] = {}
     for field in indicator_definition["fields"]:
         widget_key = indicator_param_widget_key(indicator_id, field["name"])
+        is_select_field = str(field.get("input_type", "")).strip().lower() == "select" or bool(field.get("options"))
+        is_float_field = (
+            str(field.get("value_type", "")).strip().lower() == "float"
+            or isinstance(field.get("default"), float)
+        )
         if widget_key not in st.session_state:
-            st.session_state[widget_key] = int(normalized_params[field["name"]])
-        input_values[field["name"]] = int(
-            st.number_input(
+            if is_select_field:
+                st.session_state[widget_key] = str(normalized_params[field["name"]])
+            else:
+                st.session_state[widget_key] = (
+                    float(normalized_params[field["name"]])
+                    if is_float_field
+                    else int(normalized_params[field["name"]])
+                )
+        if is_select_field:
+            options = field.get("options", [])
+            option_values = [str(option.get("value") if isinstance(option, dict) else option) for option in options]
+            option_labels = {
+                str(option.get("value")): str(option.get("label"))
+                for option in options
+                if isinstance(option, dict)
+            }
+            current_value = str(st.session_state[widget_key])
+            if current_value not in option_values and option_values:
+                current_value = option_values[0]
+                st.session_state[widget_key] = current_value
+            input_values[field["name"]] = st.selectbox(
                 field["label"],
-                min_value=int(field["min_value"]),
-                step=1,
-                value=int(st.session_state[widget_key]),
-                format="%d",
+                options=option_values,
+                index=(option_values.index(current_value) if current_value in option_values else 0),
+                format_func=lambda value: option_labels.get(str(value), str(value)),
                 key=widget_key,
             )
-        )
-
+        elif is_float_field:
+            input_values[field["name"]] = float(
+                st.number_input(
+                    field["label"],
+                    min_value=float(field["min_value"]),
+                    step=float(field.get("step", 0.1)),
+                    value=float(st.session_state[widget_key]),
+                    format=str(field.get("format", "%.2f")),
+                    key=widget_key,
+                )
+            )
+        else:
+            input_values[field["name"]] = int(
+                st.number_input(
+                    field["label"],
+                    min_value=int(field["min_value"]),
+                    step=1,
+                    value=int(st.session_state[widget_key]),
+                    format="%d",
+                    key=widget_key,
+                )
+            )
     if indicator["key"] == "CANDLE_PATTERN":
         st.markdown("**Pattern Candle yang Tampil**")
         st.caption("Pilih pola candle yang ingin diberi label di chart utama.")
@@ -625,6 +668,7 @@ def render_indicator_list_tab() -> None:
                     add_indicator(indicator["key"])
                     close_indicator_editor()
                     st.rerun()
+
 
 
 

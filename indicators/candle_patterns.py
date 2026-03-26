@@ -4,6 +4,8 @@ from typing import Any
 
 import pandas as pd
 
+from common.time_utils import format_short_date_label
+
 CANDLE_PATTERN_DEFINITIONS: dict[str, dict[str, str]] = {
     "bullish_engulfing": {
         "label": "Bullish Engulfing",
@@ -400,8 +402,8 @@ def summarize_candle_patterns(
             "total_events": 0,
         }
 
-    recent_events = events.tail(24).copy()
-    recent_events["date_label"] = pd.to_datetime(recent_events["time"], errors="coerce").dt.strftime("%Y-%m-%d")
+    formatted_events = events.copy()
+    formatted_events["date_label"] = formatted_events["time"].map(format_short_date_label)
     event_rows = [
         {
             "time": row.time,
@@ -412,12 +414,12 @@ def summarize_candle_patterns(
             "description": row.description,
             "direction": row.direction,
         }
-        for row in recent_events.itertuples(index=False)
+        for row in formatted_events.itertuples(index=False)
     ]
 
     latest_by_direction: dict[str, dict[str, Any]] = {}
     for direction in ["bullish", "bearish", "neutral"]:
-        direction_events = recent_events.loc[recent_events["direction"] == direction]
+        direction_events = formatted_events.loc[formatted_events["direction"] == direction]
         if direction_events.empty:
             continue
         latest = direction_events.iloc[-1]
@@ -425,7 +427,7 @@ def summarize_candle_patterns(
             "label": str(latest["label"]),
             "short_label": str(latest["short_label"]),
             "description": str(latest["description"]),
-            "date_label": pd.to_datetime(latest["time"], errors="coerce").strftime("%Y-%m-%d"),
+            "date_label": format_short_date_label(latest["time"]),
         }
 
     return {
@@ -433,3 +435,6 @@ def summarize_candle_patterns(
         "latest_by_direction": latest_by_direction,
         "total_events": int(len(events)),
     }
+
+
+

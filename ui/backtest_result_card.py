@@ -7,6 +7,7 @@ import streamlit as st
 
 from backtest.config import display_backtest_period_label
 from backtest.models import BacktestResult
+from common.time_utils import format_short_timestamp_label
 
 SUMMARY_TONES = {
     "positive": {
@@ -310,6 +311,8 @@ def _format_trade_log_cell(column_name: str, value: object) -> str:
         return str(int(float(value)))
     if column_name in {"Harga entry", "Harga exit"}:
         return _format_rupiah(float(value))
+    if column_name in {"Waktu entry", "Waktu exit"}:
+        return format_short_timestamp_label(value)
     if column_name == "Kuantitas":
         return _format_qty(float(value))
     if column_name == "Lot":

@@ -3,16 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from indicators.candle_patterns import (
-    ALL_CANDLE_PATTERN_KEYS,
-    CANDLE_PATTERN_DEFINITIONS,
     get_default_candle_pattern_params,
     normalize_candle_pattern_params,
 )
 from indicators.chart_patterns import (
-    ALL_CHART_PATTERN_KEYS,
-    CHART_PATTERN_DEFINITIONS,
     get_default_chart_pattern_params,
     normalize_chart_pattern_params,
+)
+from indicators.consolidation_areas import (
+    get_default_consolidation_area_params,
+    normalize_consolidation_area_params,
 )
 
 INDICATOR_CATALOG = [
@@ -303,7 +303,58 @@ INDICATOR_CATALOG = [
             {"name": "bullish", "label": "Pattern Bullish", "default": "#22c55e"},
             {"name": "bearish", "label": "Pattern Bearish", "default": "#ef4444"},
             {"name": "neutral", "label": "Pattern Netral", "default": "#38bdf8"},
-            {"name": "line", "label": "Garis Pattern", "default": "#f8fafc"},
+            {"name": "line", "label": "Garis Pattern", "default": "#1d4ed8"},
+        ],
+    },
+    {
+        "key": "CONSOLIDATION_AREA",
+        "modal_label": "Area Konsolidasi",
+        "description": "Tandai beberapa area konsolidasi valid langsung di chart utama dengan box transparan.",
+        "placement": "overlay",
+        "fields": [
+            {
+                "name": "lookback",
+                "label": "Lookback Area",
+                "default": 220,
+                "min_value": 40,
+            },
+            {
+                "name": "consolidation_bars",
+                "label": "Bar Konsolidasi",
+                "default": 10,
+                "min_value": 3,
+            },
+            {
+                "name": "max_consolidation_range_pct",
+                "label": "Rentang Maks (%)",
+                "default": 6,
+                "min_value": 1,
+            },
+            {
+                "name": "volume_ma_period",
+                "label": "MA Volume",
+                "default": 20,
+                "min_value": 3,
+            },
+            {
+                "name": "consolidation_volume_ratio_max",
+                "label": "Volume Konsolidasi Maks. (x)",
+                "default": 0.8,
+                "min_value": 0.1,
+                "step": 0.05,
+                "format": "%.2f",
+                "value_type": "float",
+            },
+            {
+                "name": "max_zones",
+                "label": "Maks. Zona",
+                "default": 6,
+                "min_value": 1,
+            },
+        ],
+        "color_fields": [
+            {"name": "zone", "label": "Zona Historis", "default": "#38bdf8"},
+            {"name": "active", "label": "Zona Aktif", "default": "#22c55e"},
         ],
     },
     {
@@ -324,6 +375,12 @@ INDICATOR_CATALOG = [
             {
                 "name": "swing_window",
                 "label": "Sensitivitas Pivot",
+                "default": 3,
+                "min_value": 1,
+            },
+            {
+                "name": "max_trendlines",
+                "label": "Maks. Trendline",
                 "default": 3,
                 "min_value": 1,
             },
@@ -353,6 +410,12 @@ INDICATOR_CATALOG = [
                 "label": "Sensitivitas Pivot Major",
                 "default": 4,
                 "min_value": 2,
+            },
+            {
+                "name": "max_trendlines",
+                "label": "Maks. Trendline Major",
+                "default": 3,
+                "min_value": 1,
             },
         ],
         "color_fields": [
@@ -579,7 +642,7 @@ INDICATOR_CATALOG = [
     {
         "key": "FIBONACCI",
         "modal_label": "Fibonacci",
-        "description": "Level retracement Fibonacci dari range harga terbaru.",
+        "description": "Level retracement Fibonacci dari range harga terbaru dengan pilihan arah swing.",
         "placement": "overlay",
         "fields": [
             {
@@ -587,7 +650,17 @@ INDICATOR_CATALOG = [
                 "label": "Lookback",
                 "default": 120,
                 "min_value": 5,
-            }
+            },
+            {
+                "name": "swing_direction",
+                "label": "Arah Swing",
+                "default": "low_to_high",
+                "input_type": "select",
+                "options": [
+                    {"value": "low_to_high", "label": "Swing Low -> Swing High"},
+                    {"value": "high_to_low", "label": "Swing High -> Swing Low"},
+                ],
+            },
         ],
         "color_fields": [
             {"name": "line", "label": "Fibonacci", "default": "#60a5fa"},
@@ -625,6 +698,15 @@ def _coerce_positive_integer(value: Any, fallback: int) -> int:
     return max(normalized_value, 1)
 
 
+
+def _coerce_positive_float(value: Any, fallback: float, minimum: float = 0.0) -> float:
+    """Convert a raw field value into a positive float."""
+    try:
+        normalized_value = float(value)
+    except (TypeError, ValueError):
+        normalized_value = float(fallback)
+    return max(normalized_value, float(minimum))
+
 def _normalize_hex_color(value: Any, fallback: str) -> str:
     """Convert a raw color value into a valid hex color."""
     if isinstance(value, str):
@@ -655,8 +737,18 @@ def default_indicator_params(indicator_key: str) -> dict[str, Any]:
         return get_default_candle_pattern_params()
     if indicator_key == "CHART_PATTERN":
         return get_default_chart_pattern_params()
+    if indicator_key == "CONSOLIDATION_AREA":
+        return get_default_consolidation_area_params()
     indicator = INDICATOR_CATALOG_BY_KEY[indicator_key]
-    return {field["name"]: int(field["default"]) for field in indicator["fields"]}
+    default_params: dict[str, Any] = {}
+    for field in indicator["fields"]:
+        if field.get("input_type") == "select" or field.get("options"):
+            default_params[field["name"]] = str(field["default"])
+        elif str(field.get("value_type", "")).strip().lower() == "float" or isinstance(field.get("default"), float):
+            default_params[field["name"]] = float(field["default"] )
+        else:
+            default_params[field["name"]] = int(field["default"])
+    return default_params
 
 
 def default_indicator_colors(indicator_key: str) -> dict[str, str]:
@@ -672,20 +764,38 @@ def normalize_indicator_params(
     indicator_key: str,
     raw_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Normalize indicator params so the chart always receives valid numbers."""
+    """Normalize indicator params so the chart always receives valid values."""
     if indicator_key == "CANDLE_PATTERN":
         return normalize_candle_pattern_params(raw_params)
     if indicator_key == "CHART_PATTERN":
         return normalize_chart_pattern_params(raw_params)
+    if indicator_key == "CONSOLIDATION_AREA":
+        return normalize_consolidation_area_params(raw_params)
 
     raw_params = raw_params or {}
     indicator = INDICATOR_CATALOG_BY_KEY[indicator_key]
     normalized_params = {}
     for field in indicator["fields"]:
-        normalized_params[field["name"]] = _coerce_positive_integer(
-            raw_params.get(field["name"]),
-            int(field["default"]),
-        )
+        field_name = field["name"]
+        if field.get("input_type") == "select" or field.get("options"):
+            allowed_values = [
+                str(option.get("value") if isinstance(option, dict) else option)
+                for option in field.get("options", [])
+            ]
+            default_value = str(field["default"])
+            raw_value = str(raw_params.get(field_name, default_value))
+            normalized_params[field_name] = raw_value if raw_value in allowed_values else default_value
+        elif str(field.get("value_type", "")).strip().lower() == "float" or isinstance(field.get("default"), float):
+            normalized_params[field_name] = _coerce_positive_float(
+                raw_params.get(field_name),
+                float(field["default"]),
+                float(field.get("min_value", 0.0)),
+            )
+        else:
+            normalized_params[field_name] = max(
+                _coerce_positive_integer(raw_params.get(field_name), int(field["default"])),
+                int(field.get("min_value", 1)),
+            )
 
     if indicator_key in {"EMA_CROSS", "MA_CROSS"}:
         fast_length, slow_length = _normalize_ordered_values(
@@ -727,11 +837,20 @@ def normalize_indicator_params(
             max(normalized_params["swing_window"], 1),
             max(normalized_params["lookback"] // 4, 1),
         )
+        if indicator_key == "TRENDLINE":
+            normalized_params["max_trendlines"] = min(
+                max(normalized_params.get("max_trendlines", 3), 1),
+                6,
+            )
     elif indicator_key == "MAJOR_TRENDLINE":
         normalized_params["lookback"] = max(normalized_params["lookback"], 60)
         normalized_params["swing_window"] = min(
             max(normalized_params["swing_window"], 2),
             max(normalized_params["lookback"] // 6, 2),
+        )
+        normalized_params["max_trendlines"] = min(
+            max(normalized_params.get("max_trendlines", 3), 1),
+            6,
         )
     elif indicator_key == "STRONG_SUPPORT_RESISTANCE":
         normalized_params["lookback"] = max(normalized_params["lookback"], 40)
@@ -745,6 +864,7 @@ def normalize_indicator_params(
         )
 
     return normalized_params
+
 
 
 def normalize_indicator_colors(
@@ -806,16 +926,21 @@ def format_indicator_instance_label(indicator: dict[str, Any]) -> str:
     if indicator_key == "PARABOLIC_SAR":
         return "Parabolic SAR"
     if indicator_key == "CANDLE_PATTERN":
-        return "Candle Pattern"
+        return f"Candle Pattern {params['lookback']}"
     if indicator_key == "CHART_PATTERN":
         return (
             f"Chart Pattern {params['lookback']} / "
             f"{params['pivot_window']} / {params['tolerance_pct']}%"
         )
+    if indicator_key == "CONSOLIDATION_AREA":
+        return (
+            f"Area Konsolidasi {params['lookback']} / "
+            f"{params['consolidation_bars']} / {params['max_zones']}"
+        )
     if indicator_key == "TRENDLINE":
-        return f"Minor Trend {params['lookback']} / {params['swing_window']}"
+        return f"Minor Trend {params['lookback']} / {params['swing_window']} / {params['max_trendlines']}"
     if indicator_key == "MAJOR_TRENDLINE":
-        return f"Major Trend {params['lookback']} / {params['swing_window']}"
+        return f"Major Trend {params['lookback']} / {params['swing_window']} / {params['max_trendlines']}"
     if indicator_key == "NEAREST_SUPPORT_RESISTANCE":
         return f"S/R {params['lookback']} / {params['swing_window']}"
     if indicator_key == "STRONG_SUPPORT_RESISTANCE":
@@ -845,10 +970,18 @@ def format_indicator_instance_label(indicator: dict[str, Any]) -> str:
             f"{params['k_smoothing']} / {params['d_length']}"
         )
     if indicator_key == "FIBONACCI":
-        return f"Fibonacci {params['lookback']}"
+        direction_label = "L->H" if params["swing_direction"] == "low_to_high" else "H->L"
+        return f"Fibonacci {params['lookback']} / {direction_label}"
     if indicator_key == "PIVOT_POINT_STANDARD":
         return "Pivot Point Standard"
     return indicator_key
+
+
+
+
+
+
+
 
 
 

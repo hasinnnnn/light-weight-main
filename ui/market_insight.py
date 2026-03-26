@@ -7,14 +7,18 @@ import streamlit as st
 
 from charts.chart_service import (
     describe_auto_trendline,
+    describe_auto_trendlines,
     describe_major_trendline,
+    describe_major_trendlines,
     describe_nearest_support_resistance,
     describe_strong_support_resistance,
 )
 from data.market_data_service import DataLoadResult
 from indicators.candle_patterns import summarize_candle_patterns
 from indicators.chart_patterns import summarize_chart_patterns
+from indicators.consolidation_areas import summarize_consolidation_areas
 from indicators.catalog import normalize_indicator_colors, normalize_indicator_params
+from common.time_utils import format_short_date_label, format_short_timestamp_label, is_intraday_interval
 
 def format_price_value(value: float) -> str:
     """Format the latest price compactly for the insight card."""
@@ -25,6 +29,12 @@ def format_price_value(value: float) -> str:
         return f"{value:,.2f}"
     return f"{value:,.4f}"
 
+
+def format_pattern_time_label(value: Any, interval_label: str | None) -> str:
+    """Show time for intraday pattern tables and date-only for daily-or-higher charts."""
+    if interval_label and is_intraday_interval(interval_label):
+        return format_short_timestamp_label(value)
+    return format_short_date_label(value)
 
 def format_metric_value(value: float | None, use_integer_price: bool = False) -> str:
     """Format one small metric value for the quote summary area."""
@@ -284,7 +294,7 @@ def format_break_event_dates_text(
     event_dates: list[str] | None,
 ) -> str:
     """Format breakout/breakdown event dates for the explanation card."""
-    cleaned_dates = [str(value).strip() for value in (event_dates or []) if str(value).strip()]
+    cleaned_dates = [format_short_date_label(value) for value in (event_dates or []) if str(value).strip()]
     if not cleaned_dates:
         return f"Tanggal {label}: belum ada"
     return f"Tanggal {label}: {', '.join(cleaned_dates)}"
@@ -297,6 +307,18 @@ def format_support_resistance_zone(level: dict[str, Any]) -> str:
         f"{format_price_value(float(level['zone_top']))}"
     )
 
+
+def format_consolidation_area(area: dict[str, Any]) -> str:
+    """Format one consolidation zone into a compact label."""
+    return (
+        f"{format_price_value(float(area['zone_bottom']))} - "
+        f"{format_price_value(float(area['zone_top']))}"
+    )
+
+
+def format_date_label(value: Any) -> str:
+    """Format one raw date-like value into Indonesian short-date style."""
+    return format_short_date_label(value)
 
 def describe_support_resistance_area(
     level: dict[str, Any] | None,
@@ -378,11 +400,61 @@ def build_indicator_note_info_box_html(
     )
 
 
+PATTERN_DIRECTION_LABELS = {
+    "bullish": "Bullish",
+    "bearish": "Bearish",
+    "neutral": "Netral",
+}
+
+
+def format_pattern_direction_label(direction: str) -> str:
+    """Translate one pattern direction into Indonesian display text."""
+    normalized_direction = str(direction or "").strip().lower()
+    return PATTERN_DIRECTION_LABELS.get(normalized_direction, normalized_direction or "-")
+
+
+
+def build_indicator_note_table_html(
+    title: str,
+    columns: list[str],
+    rows: list[list[str]],
+) -> str:
+    """Build one compact HTML table for indicator history rows."""
+    if not rows:
+        return ""
+
+    header_html = "".join(
+        f'<th style="padding: 0.72rem 0.78rem; text-align: left; background: rgba(15, 23, 42, 0.92); color: #cbd5e1; font-size: 0.84rem; font-weight: 700; border-bottom: 1px solid rgba(148, 163, 184, 0.18); white-space: nowrap;">{html.escape(column)}</th>'
+        for column in columns
+    )
+
+    body_rows: list[str] = []
+    for row_index, row_values in enumerate(rows):
+        row_background = "rgba(15, 23, 42, 0.34)" if row_index % 2 == 0 else "rgba(15, 23, 42, 0.22)"
+        cell_html = "".join(
+            f'<td style="padding: 0.72rem 0.78rem; color: #e2e8f0; font-size: 0.84rem; border-top: 1px solid rgba(148, 163, 184, 0.10); vertical-align: top;">{html.escape(str(cell_value))}</td>'
+            for cell_value in row_values
+        )
+        body_rows.append(f'<tr style="background: {row_background};">{cell_html}</tr>')
+
+    return (
+        '<div style="margin-top: 1rem;">'
+        f'<div class="indicator-note-section-context">{html.escape(title)}</div>'
+        '<div style="overflow-x: auto; border: 1px solid rgba(148, 163, 184, 0.16); border-radius: 14px; background: rgba(15, 23, 42, 0.24);">'
+        '<table style="width: 100%; border-collapse: collapse; min-width: 720px;">'
+        f'<thead><tr>{header_html}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody>'
+        '</table></div></div>'
+    )
+
+
+
 def build_indicator_note_section_html(
     title: str,
     summary_text: str,
     boxes_html: list[str],
     context_text: str = "",
+    extra_html: str = "",
 ) -> str:
     """Build one section inside the indicator explanation card."""
     context_html = (
@@ -396,8 +468,87 @@ def build_indicator_note_section_html(
         f'<div class="indicator-note-section-summary">{html.escape(summary_text)}</div>'
         f"{context_html}"
         f'<div class="indicator-note-grid">{"".join(boxes_html)}</div>'
+        f"{extra_html}"
         "</div>"
     )
+
+
+
+def _trendline_break_value(summary: dict[str, Any], major: bool = False) -> str:
+    """Return one compact break-status label for trendline cards."""
+    label = str(summary.get("break_display_label") or "").strip()
+    if label:
+        return label
+
+    direction = str(summary.get("direction") or "down")
+    latest_signal = str(summary.get("latest_signal") or "")
+    has_any_break = bool(summary.get("has_any_relevant_break"))
+    if direction == "up":
+        if latest_signal in {"fresh_breakdown", "breakdown"}:
+            return "Breakdown Valid"
+        if latest_signal == "reclaimed":
+            return "False Breakdown"
+        if latest_signal == "retest":
+            return "Baru Disentuh"
+        return "Pernah Breakdown" if has_any_break else "Belum Ada Breakdown"
+
+    if latest_signal in {"fresh_breakout", "breakout"}:
+        return "Breakout Valid"
+    if latest_signal == "rejected":
+        return "False Breakout"
+    if latest_signal == "retest":
+        return "Baru Disentuh"
+    return "Pernah Breakout" if has_any_break else "Belum Ada Breakout"
+
+
+
+def _trendline_break_event_text(summary: dict[str, Any]) -> str:
+    """Describe the latest break event without mixing support and resistance terms."""
+    direction = str(summary.get("direction") or "down")
+    break_label = _trendline_break_value(summary)
+    latest_break_date = summary.get("latest_break_date")
+    if latest_break_date is None:
+        if direction == "up":
+            return "Break terakhir: belum ada breakdown valid."
+        return "Break terakhir: belum ada breakout valid."
+    return f"Break terakhir: {break_label} ({format_short_date_label(latest_break_date)})"
+
+
+
+def _build_trendline_boxes(
+    trendlines: list[dict[str, Any]],
+    colors: dict[str, Any],
+    label_prefix: str,
+    major: bool = False,
+) -> list[str]:
+    """Build one info box per trendline so multiple lines stay readable in Keterangan."""
+    boxes: list[str] = []
+    for index, summary in enumerate(trendlines):
+        direction = str(summary["direction"])
+        direction_label = "Naik" if direction == "up" else "Turun"
+        role_label = "support" if direction == "up" else "resistance"
+        trendline_color = colors.get(direction, "#22c55e" if direction == "up" else "#ef4444")
+        boxes.append(
+            build_indicator_note_info_box_html(
+                label=f"{label_prefix} {index + 1} - {direction_label}",
+                value=f"{format_price_value(float(summary['line_value']))}",
+                color=trendline_color,
+                detail_lines=[
+                    f"Role {role_label.title()} | Disentuh {int(summary['touch_count'])} kali",
+                    f"Status {_trendline_break_value(summary, major=major)}",
+                    _trendline_break_event_text(summary),
+                    (
+                        f"Anchor {format_price_value(float(summary['start_value']))} -> "
+                        f"{format_price_value(float(summary['end_pivot_value']))}"
+                    ),
+                    (
+                        f"Jarak dari harga "
+                        f"{format_price_distance_percentage(float(summary['current_price']), float(summary['line_value']))}"
+                    ),
+                ],
+            )
+        )
+    return boxes
 
 
 def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | None = None) -> None:
@@ -417,6 +568,7 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
         if indicator_key not in {
             "CANDLE_PATTERN",
             "CHART_PATTERN",
+            "CONSOLIDATION_AREA",
             "TRENDLINE",
             "MAJOR_TRENDLINE",
             "NEAREST_SUPPORT_RESISTANCE",
@@ -436,6 +588,20 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
             latest_bullish = summary["latest_by_direction"].get("bullish")
             latest_bearish = summary["latest_by_direction"].get("bearish")
             latest_neutral = summary["latest_by_direction"].get("neutral")
+            candle_history_table_html = build_indicator_note_table_html(
+                title="Daftar semua candle pattern di chart",
+                columns=["Tanggal", "Kode", "Pattern", "Arah", "Keterangan"],
+                rows=[
+                    [
+                        format_pattern_time_label(event.get("time"), result.interval_label),
+                        str(event["short_label"]),
+                        str(event["label"]),
+                        format_pattern_direction_label(str(event["direction"])),
+                        str(event["description"]),
+                    ]
+                    for event in reversed(summary["events"])
+                ],
+            )
             if latest_event is None:
                 section_html.append(
                     build_indicator_note_section_html(
@@ -531,6 +697,7 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
                             empty_message="Belum ada pattern netral di range ini.",
                         ),
                     ],
+                    extra_html=candle_history_table_html,
                 )
             )
             continue
@@ -544,6 +711,20 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
             latest_bullish = summary["latest_by_direction"].get("bullish")
             latest_bearish = summary["latest_by_direction"].get("bearish")
             latest_neutral = summary["latest_by_direction"].get("neutral")
+            chart_history_table_html = build_indicator_note_table_html(
+                title="Daftar semua chart pattern di chart",
+                columns=["Tanggal", "Kode", "Pattern", "Arah", "Keterangan"],
+                rows=[
+                    [
+                        format_pattern_time_label(pattern.get("time") or pattern.get("end_time"), result.interval_label),
+                        str(pattern["short_label"]),
+                        str(pattern["label"]),
+                        format_pattern_direction_label(str(pattern["direction"])),
+                        " | ".join([str(pattern["description"]), *[str(line) for line in pattern.get("detail_lines") or []]]),
+                    ]
+                    for pattern in reversed(summary["patterns"])
+                ],
+            )
             if latest_pattern is None:
                 section_html.append(
                     build_indicator_note_section_html(
@@ -649,11 +830,142 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
                             empty_message="Belum ada chart pattern netral di range ini.",
                         ),
                     ],
+                    extra_html=chart_history_table_html,
                 )
             )
             continue
+        if indicator_key == "CONSOLIDATION_AREA":
+            summary = summarize_consolidation_areas(result.data, params)
+            zone_color = colors.get("zone", "#38bdf8")
+            active_color = colors.get("active", "#22c55e")
+            latest_area = summary["latest_area"]
+            active_area = summary["active_area"]
+            latest_breakout_area = summary["latest_breakout_area"]
+            normalized_params = summary["params"]
+            if latest_area is None:
+                section_html.append(
+                    build_indicator_note_section_html(
+                        title="Area Konsolidasi",
+                        summary_text="Belum ada area konsolidasi valid di range chart aktif.",
+                        context_text=(
+                            f"Lookback {int(normalized_params['lookback'])} candle, minimal "
+                            f"{int(normalized_params['consolidation_bars'])} bar, rentang maks "
+                            f"{float(normalized_params['max_consolidation_range_pct']):.2f}%, volume konsolidasi maks "
+                            f"{float(normalized_params['consolidation_volume_ratio_max']):.2f}x."
+                        ),
+                        boxes_html=[
+                            build_indicator_note_info_box_html(
+                                label="Zona Terbaru",
+                                value=None,
+                                color=zone_color,
+                                empty_message="Belum ada zona konsolidasi yang valid.",
+                            ),
+                            build_indicator_note_info_box_html(
+                                label="Zona Aktif",
+                                value=None,
+                                color=active_color,
+                                empty_message="Belum ada konsolidasi aktif di range ini.",
+                            ),
+                            build_indicator_note_info_box_html(
+                                label="Breakout Terbaru",
+                                value=None,
+                                color=zone_color,
+                                empty_message="Belum ada zona konsolidasi yang breakout.",
+                            ),
+                        ],
+                    )
+                )
+                continue
+
+            latest_area_details = [
+                f"Tanggal {format_date_label(latest_area['start_time'])} s/d {format_date_label(latest_area['end_time'])}",
+                str(latest_area["status_label"]),
+            ]
+            if latest_area.get("range_pct") is not None:
+                latest_area_details.append(f"Lebar {float(latest_area['range_pct']):.2f}%")
+            if latest_area.get("consolidation_volume_ratio") is not None:
+                latest_area_details.append(
+                    f"Vol konsolidasi {float(latest_area['consolidation_volume_ratio']):.2f}x"
+                )
+
+            active_area_details = None
+            if active_area is not None:
+                active_area_details = [
+                    f"Tanggal {format_date_label(active_area['start_time'])} s/d {format_date_label(active_area['end_time'])}",
+                    str(active_area["status_label"]),
+                ]
+                if active_area.get("range_pct") is not None:
+                    active_area_details.append(f"Lebar {float(active_area['range_pct']):.2f}%")
+
+            breakout_area_details = None
+            if latest_breakout_area is not None:
+                breakout_area_details = [
+                    f"Zona {format_date_label(latest_breakout_area['start_time'])} s/d {format_date_label(latest_breakout_area['end_time'])}",
+                    str(latest_breakout_area["status_label"]),
+                ]
+                if latest_breakout_area.get("breakout_time") is not None:
+                    breakout_area_details.append(
+                        f"Breakout {format_date_label(latest_breakout_area['breakout_time'])}"
+                    )
+                if latest_breakout_area.get("breakout_volume_ratio") is not None:
+                    breakout_area_details.append(
+                        f"Volume breakout {float(latest_breakout_area['breakout_volume_ratio']):.2f}x"
+                    )
+
+            section_html.append(
+                build_indicator_note_section_html(
+                    title="Area Konsolidasi",
+                    summary_text=(
+                        f"Terdeteksi {int(summary['total_areas'])} area konsolidasi di range chart aktif. "
+                        f"Zona terbaru berada di area {format_consolidation_area(latest_area)} dan {str(latest_area['status_label']).lower()}."
+                    ),
+                    context_text=(
+                        f"Lookback {int(normalized_params['lookback'])} candle, minimal "
+                        f"{int(normalized_params['consolidation_bars'])} bar, rentang maks "
+                        f"{float(normalized_params['max_consolidation_range_pct']):.2f}%, volume konsolidasi maks "
+                        f"{float(normalized_params['consolidation_volume_ratio_max']):.2f}x, tampil maksimal "
+                        f"{int(normalized_params['max_zones'])} zona."
+                    ),
+                    boxes_html=[
+                        build_indicator_note_info_box_html(
+                            label="Zona Terbaru",
+                            value=format_consolidation_area(latest_area),
+                            color=(active_color if latest_area["status"] == "active" else zone_color),
+                            detail_lines=latest_area_details,
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Zona Aktif",
+                            value=(format_consolidation_area(active_area) if active_area is not None else None),
+                            color=active_color,
+                            detail_lines=active_area_details,
+                            empty_message="Saat ini belum ada konsolidasi aktif.",
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Breakout Terbaru",
+                            value=(
+                                format_consolidation_area(latest_breakout_area)
+                                if latest_breakout_area is not None
+                                else None
+                            ),
+                            color=zone_color,
+                            detail_lines=breakout_area_details,
+                            empty_message="Belum ada zona konsolidasi yang breakout di range ini.",
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Jumlah Zona",
+                            value=str(int(summary["total_areas"])),
+                            color=zone_color,
+                            detail_lines=[
+                                f"Maks ditampilkan {int(normalized_params['max_zones'])} zona",
+                            ],
+                        ),
+                    ],
+                )
+            )
+            continue
+
         if indicator_key == "TRENDLINE":
-            summary = describe_auto_trendline(
+            summary_bundle = describe_auto_trendlines(
                 result.data,
                 {
                     "key": indicator_key,
@@ -663,7 +975,7 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
                 },
             )
             trendline_color = colors.get("up", "#22c55e")
-            if summary is None:
+            if summary_bundle is None:
                 section_html.append(
                     build_indicator_note_section_html(
                         title="Trendline Kecil (Minor Trend)",
@@ -687,65 +999,33 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
                 )
                 continue
 
-            direction = str(summary["direction"])
-            role_label = "support" if direction == "up" else "resistance"
-            direction_label = "Naik" if direction == "up" else "Turun"
-            trendline_color = colors.get(direction, "#22c55e" if direction == "up" else "#ef4444")
-            if bool(summary.get("is_breakout_active")):
-                break_value = "Breakout Aktif"
-            elif bool(summary.get("is_breakdown_active")):
-                break_value = "Breakdown Aktif"
-            elif int(summary.get("breakout_count", 0)) > 0 or int(summary.get("breakdown_count", 0)) > 0:
-                break_value = "Pernah Break"
-            else:
-                break_value = "Belum Ada Break"
-
+            trendlines = summary_bundle["trendlines"]
+            primary = summary_bundle["primary"]
+            direction_label = "naik" if str(primary["direction"]) == "up" else "turun"
+            role_label = "support" if str(primary["direction"]) == "up" else "resistance"
             section_html.append(
                 build_indicator_note_section_html(
                     title="Trendline Kecil (Minor Trend)",
                     summary_text=(
-                        f"Trendline kecil yang aktif adalah trendline {direction_label.lower()} "
-                        f"sebagai area {role_label}. {summary['status_label']}"
+                        f"Terdeteksi {len(trendlines)} trendline kecil. Trendline utama adalah trendline {direction_label} "
+                        f"sebagai area {role_label}. {primary['status_label']}"
                     ),
                     context_text=(
-                        f"Lookback {int(summary['lookback'])} candle dengan sensitivitas pivot "
-                        f"{int(summary['pivot_window'])}."
+                        f"Lookback {int(summary_bundle['lookback'])} candle dengan sensitivitas pivot "
+                        f"{int(summary_bundle['pivot_window'])}. Ditampilkan maksimal {int(summary_bundle['max_trendlines'])} trendline. "
+                        "Break valid dihitung dari candle close yang menutup di luar trendline, bukan cuma wick menyentuh garis."
                     ),
-                    boxes_html=[
-                        build_indicator_note_info_box_html(
-                            label=f"Trendline {direction_label}",
-                            value=f"{format_price_value(float(summary['line_value']))}",
-                            color=trendline_color,
-                            detail_lines=[
-                                f"Role {role_label.title()} | Disentuh {int(summary['touch_count'])} kali",
-                                (
-                                    f"Anchor {format_price_value(float(summary['start_value']))} -> "
-                                    f"{format_price_value(float(summary['end_pivot_value']))}"
-                                ),
-                                (
-                                    f"Jarak dari harga "
-                                    f"{format_price_distance_percentage(float(summary['current_price']), float(summary['line_value']))}"
-                                ),
-                            ],
-                        ),
-                        build_indicator_note_info_box_html(
-                            label="Status Break",
-                            value=break_value,
-                            color=trendline_color,
-                            detail_lines=[
-                                f"Breakout {int(summary['breakout_count'])}x | Breakdown {int(summary['breakdown_count'])}x",
-                                str(summary["status_label"]),
-                                format_break_event_dates_text("breakout", summary.get("breakout_dates")),
-                                format_break_event_dates_text("breakdown", summary.get("breakdown_dates")),
-                            ],
-                        ),
-                    ],
+                    boxes_html=_build_trendline_boxes(
+                        trendlines=trendlines,
+                        colors=colors,
+                        label_prefix="Trendline",
+                        major=False,
+                    ),
                 )
             )
             continue
-
         if indicator_key == "MAJOR_TRENDLINE":
-            summary = describe_major_trendline(
+            summary_bundle = describe_major_trendlines(
                 result.data,
                 {
                     "key": indicator_key,
@@ -756,7 +1036,7 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
                 interval_label=result.interval_label,
             )
             major_trend_color = colors.get("up", "#22c55e")
-            if summary is None:
+            if summary_bundle is None:
                 section_html.append(
                     build_indicator_note_section_html(
                         title="Trendline Besar (Major Trend)",
@@ -782,63 +1062,32 @@ def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | 
                 )
                 continue
 
-            direction = str(summary["direction"])
-            role_label = "support" if direction == "up" else "resistance"
-            direction_label = "Naik" if direction == "up" else "Turun"
-            major_trend_color = colors.get(direction, "#22c55e" if direction == "up" else "#ef4444")
-            if bool(summary.get("is_breakout_active")):
-                break_value = "Breakout Besar Aktif"
-            elif bool(summary.get("is_breakdown_active")):
-                break_value = "Breakdown Besar Aktif"
-            elif int(summary.get("breakout_count", 0)) > 0 or int(summary.get("breakdown_count", 0)) > 0:
-                break_value = "Pernah Break Besar"
-            else:
-                break_value = "Belum Ada Break Besar"
-
+            trendlines = summary_bundle["trendlines"]
+            primary = summary_bundle["primary"]
+            direction_label = "naik" if str(primary["direction"]) == "up" else "turun"
+            role_label = "support" if str(primary["direction"]) == "up" else "resistance"
             section_html.append(
                 build_indicator_note_section_html(
                     title="Trendline Besar (Major Trend)",
                     summary_text=(
-                        f"Major trendline yang aktif adalah trendline {direction_label.lower()} "
-                        f"sebagai area {role_label}. {summary['status_label']}"
+                        f"Terdeteksi {len(trendlines)} major trendline. Trendline utama adalah trendline {direction_label} "
+                        f"sebagai area {role_label}. {primary['status_label']}"
                     ),
                     context_text=(
-                        f"Analisis major trend memakai timeframe {summary['analysis_timeframe']} "
-                        f"dengan lookback {int(summary['lookback'])} dan sensitivitas pivot {int(summary['pivot_window'])}."
+                        f"Analisis major trend memakai timeframe {summary_bundle['analysis_timeframe']} dengan lookback "
+                        f"{int(summary_bundle['lookback'])}, sensitivitas pivot {int(summary_bundle['pivot_window'])}, "
+                        f"dan maksimal {int(summary_bundle['max_trendlines'])} trendline. "
+                        "Break valid dihitung dari candle close yang menutup di luar trendline, bukan cuma wick menyentuh garis."
                     ),
-                    boxes_html=[
-                        build_indicator_note_info_box_html(
-                            label=f"Major Trend {direction_label}",
-                            value=f"{format_price_value(float(summary['line_value']))}",
-                            color=major_trend_color,
-                            detail_lines=[
-                                f"Role {role_label.title()} | Disentuh {int(summary['touch_count'])} kali",
-                                (
-                                    f"Anchor {format_price_value(float(summary['start_value']))} -> "
-                                    f"{format_price_value(float(summary['end_pivot_value']))}"
-                                ),
-                                (
-                                    f"Jarak dari harga "
-                                    f"{format_price_distance_percentage(float(summary['current_price']), float(summary['line_value']))}"
-                                ),
-                            ],
-                        ),
-                        build_indicator_note_info_box_html(
-                            label="Status Break",
-                            value=break_value,
-                            color=major_trend_color,
-                            detail_lines=[
-                                f"Breakout {int(summary['breakout_count'])}x | Breakdown {int(summary['breakdown_count'])}x",
-                                str(summary["status_label"]),
-                                format_break_event_dates_text("breakout", summary.get("breakout_dates")),
-                                format_break_event_dates_text("breakdown", summary.get("breakdown_dates")),
-                            ],
-                        ),
-                    ],
+                    boxes_html=_build_trendline_boxes(
+                        trendlines=trendlines,
+                        colors=colors,
+                        label_prefix="Major Trend",
+                        major=True,
+                    ),
                 )
             )
             continue
-
         if indicator_key == "NEAREST_SUPPORT_RESISTANCE":
             summary = describe_nearest_support_resistance(
                 result.data,
@@ -1082,6 +1331,28 @@ def render_market_insight_card() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

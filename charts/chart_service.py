@@ -4,8 +4,11 @@ from typing import Any
 
 import pandas as pd
 
+from common.time_utils import format_short_date_label
+
 from indicators.candle_patterns import detect_candle_patterns
 from indicators.chart_patterns import detect_chart_patterns
+from indicators.consolidation_areas import detect_consolidation_areas
 from indicators.parabolic_sar import calculate_parabolic_sar
 from strategies.volume_breakout_strategy import summarize_volume_breakout_zone
 
@@ -28,6 +31,7 @@ OVERLAY_INDICATOR_KEYS = {
     "PARABOLIC_SAR",
     "CANDLE_PATTERN",
     "CHART_PATTERN",
+    "CONSOLIDATION_AREA",
     "VOLUME_BREAKOUT_ZONE",
     "TRENDLINE",
     "MAJOR_TRENDLINE",
@@ -55,11 +59,18 @@ CHART_PATTERN_COLORS = {
     "bullish": "#22c55e",
     "bearish": "#ef4444",
     "neutral": "#38bdf8",
-    "line": "#f8fafc",
+    "line": "#1d4ed8",
 }
+CONSOLIDATION_AREA_COLORS = {
+    "zone": "#38bdf8",
+    "active": "#22c55e",
+}
+CONSOLIDATION_AREA_FILL_ALPHA = 0.14
+CONSOLIDATION_AREA_ACTIVE_FILL_ALPHA = 0.18
 VOLUME_BREAKOUT_ZONE_COLOR = "#38bdf8"
 VOLUME_BREAKOUT_BREAKOUT_COLOR = "#22c55e"
 VOLUME_BREAKOUT_FILL_ALPHA = 0.16
+VOLUME_BREAKOUT_LOW_VOLUME_COLOR = "#94a3b8"
 ATR_COLOR = "#f59e0b"
 PRICE_OSCILLATOR_COLOR = "#38bdf8"
 TRENDLINE_COLORS = {
@@ -699,7 +710,7 @@ def _build_cross_markers(
             {
                 "time": row.time,
                 "position": "below" if row.state > 0 else "above",
-                "shape": "circle",
+                "shape": "square",
                 "color": color,
                 "text": "+",
             }
@@ -770,9 +781,9 @@ def _true_cluster_event_dates(mask: pd.Series, time_series: pd.Series) -> list[s
     for raw_time in raw_event_times:
         parsed_time = pd.to_datetime(raw_time, errors="coerce")
         if pd.isna(parsed_time):
-            date_label = str(raw_time).replace("T", " ").split(" ")[0]
+            date_label = format_short_date_label(raw_time)
         else:
-            date_label = parsed_time.strftime("%Y-%m-%d")
+            date_label = format_short_date_label(parsed_time)
 
         if date_label and date_label not in seen_dates:
             seen_dates.add(date_label)
@@ -930,19 +941,21 @@ def _build_fallback_trendline_candidate(
     return _score_trendline_candidate(frame, start_pivot, end_pivot, direction)
 
 
-def _build_trendline_candidate(
+def _build_trendline_candidates(
     frame: pd.DataFrame,
     direction: str,
     pivot_window: int,
-) -> dict[str, Any] | None:
-    """Build the best recent uptrend or downtrend line candidate."""
+) -> list[dict[str, Any]]:
+    """Build ranked recent trendline candidates for one direction."""
     pivot_column = "low" if direction == "up" else "high"
     pivot_points = _collect_pivot_points(frame, pivot_column, pivot_window)
     if len(pivot_points) < 2:
-        return _build_fallback_trendline_candidate(frame, direction)
+        fallback = _build_fallback_trendline_candidate(frame, direction)
+        return [fallback] if fallback is not None else []
 
     recent_gap_limit = max(pivot_window * 4, len(frame) // 4, 6)
     recent_start_floor = max(pivot_window, len(frame) // 3)
+    ranked_candidates: list[dict[str, Any]] = []
 
     for require_recent in (True, False):
         candidates: list[dict[str, Any]] = []
@@ -967,7 +980,7 @@ def _build_trendline_candidate(
                     candidates.append(candidate)
 
         if candidates:
-            return min(
+            ranked_candidates = sorted(
                 candidates,
                 key=lambda item: (
                     item["violations"],
@@ -976,23 +989,42 @@ def _build_trendline_candidate(
                     -item["span"],
                 ),
             )
+            break
 
-    return _build_fallback_trendline_candidate(frame, direction)
+    if not ranked_candidates:
+        fallback = _build_fallback_trendline_candidate(frame, direction)
+        return [fallback] if fallback is not None else []
+
+    unique_candidates: list[dict[str, Any]] = []
+    seen_signatures: set[tuple[str, int, int]] = set()
+    for candidate in ranked_candidates:
+        signature = (
+            str(candidate["direction"]),
+            int(candidate["start_index"]),
+            int(candidate["end_index"]),
+        )
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        unique_candidates.append(candidate)
+    return unique_candidates
 
 
-def _select_auto_trendline_candidate(
+
+def _select_auto_trendline_candidates(
     frame: pd.DataFrame,
     pivot_window: int,
-) -> dict[str, Any] | None:
-    """Choose the most relevant recent trendline, up or down, for the chart tail."""
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    """Choose the most relevant recent trendlines, up or down, for the chart tail."""
     if frame.empty or len(frame) < max((pivot_window * 2) + 3, 8):
-        return None
+        return []
 
-    up_candidate = _build_trendline_candidate(frame, "up", pivot_window)
-    down_candidate = _build_trendline_candidate(frame, "down", pivot_window)
-    candidates = [candidate for candidate in [up_candidate, down_candidate] if candidate is not None]
+    up_candidates = _build_trendline_candidates(frame, "up", pivot_window)
+    down_candidates = _build_trendline_candidates(frame, "down", pivot_window)
+    candidates = [candidate for candidate in [*up_candidates, *down_candidates] if candidate is not None]
     if not candidates:
-        return None
+        return []
 
     recent_span = min(max(pivot_window * 4, 6), len(frame) - 1)
     baseline_index = max(len(frame) - recent_span - 1, 0)
@@ -1002,7 +1034,7 @@ def _select_auto_trendline_candidate(
         if float(close_series.iloc[-1] - close_series.iloc[baseline_index]) >= 0
         else "down"
     )
-    return min(
+    ranked_candidates = sorted(
         candidates,
         key=lambda item: (
             item["violations"],
@@ -1013,41 +1045,93 @@ def _select_auto_trendline_candidate(
         ),
     )
 
+    selected_candidates: list[dict[str, Any]] = []
+    start_anchor_gap = max(pivot_window * 2, 2)
+    end_anchor_gap = max(pivot_window, 1)
+
+    for candidate in ranked_candidates:
+        is_too_similar = any(
+            str(existing["direction"]) == str(candidate["direction"])
+            and abs(int(existing["end_index"]) - int(candidate["end_index"])) <= end_anchor_gap
+            and abs(int(existing["start_index"]) - int(candidate["start_index"])) <= start_anchor_gap
+            for existing in selected_candidates
+        )
+        if is_too_similar:
+            continue
+
+        shares_anchor = any(
+            str(existing["direction"]) == str(candidate["direction"])
+            and (
+                abs(int(existing["start_index"]) - int(candidate["start_index"])) <= start_anchor_gap
+                or abs(int(existing["end_index"]) - int(candidate["end_index"])) <= end_anchor_gap
+            )
+            for existing in selected_candidates
+        )
+        if shares_anchor:
+            continue
+
+        selected_candidates.append(candidate)
+        if len(selected_candidates) >= max(max_candidates, 1):
+            break
+
+    return selected_candidates
+
+
+
+def _trendline_break_display_label(direction: str, latest_signal: str, has_any_break: bool) -> str:
+    """Return one compact break label that respects support vs resistance roles."""
+    if direction == "up":
+        if latest_signal in {"fresh_breakdown", "breakdown"}:
+            return "Breakdown Valid"
+        if latest_signal == "reclaimed":
+            return "False Breakdown"
+        if latest_signal == "retest":
+            return "Baru Disentuh"
+        return "Pernah Breakdown" if has_any_break else "Belum Ada Breakdown"
+
+    if latest_signal in {"fresh_breakout", "breakout"}:
+        return "Breakout Valid"
+    if latest_signal == "rejected":
+        return "False Breakout"
+    if latest_signal == "retest":
+        return "Baru Disentuh"
+    return "Pernah Breakout" if has_any_break else "Belum Ada Breakout"
+
+
 
 def _trendline_status_label(direction: str, latest_signal: str) -> str:
     """Return one human-friendly trendline status label."""
     if direction == "up":
         labels = {
-            "fresh_breakdown": "Harga baru breakdown di bawah trendline support.",
-            "breakdown": "Harga masih breakdown di bawah trendline support.",
-            "reclaimed": "Sempat breakdown, tapi sekarang kembali di atas trendline support.",
-            "retest": "Harga sedang mengetes trendline support.",
-            "holding": "Harga masih bertahan di atas trendline support.",
+            "fresh_breakdown": "Breakdown valid: candle close baru menutup di bawah trendline support.",
+            "breakdown": "Breakdown valid: candle close masih berada di bawah trendline support.",
+            "reclaimed": "False breakdown: sempat close di bawah support, tetapi sekarang sudah kembali di atas trendline.",
+            "retest": "Harga baru menyentuh trendline support. Ini belum breakdown karena candle close belum ditutup jelas di bawah garis.",
+            "holding": "Harga masih bertahan di atas trendline support. Belum ada breakdown valid.",
         }
     else:
         labels = {
-            "fresh_breakout": "Harga baru breakout di atas trendline resistance.",
-            "breakout": "Harga masih breakout di atas trendline resistance.",
-            "rejected": "Sempat breakout, tapi sekarang kembali di bawah trendline resistance.",
-            "retest": "Harga sedang mengetes trendline resistance.",
-            "holding": "Harga masih tertahan di bawah trendline resistance.",
+            "fresh_breakout": "Breakout valid: candle close baru menutup di atas trendline resistance.",
+            "breakout": "Breakout valid: candle close masih berada di atas trendline resistance.",
+            "rejected": "False breakout: sempat close di atas resistance, tetapi sekarang sudah kembali di bawah trendline.",
+            "retest": "Harga baru menyentuh trendline resistance. Ini belum breakout karena candle close belum ditutup jelas di atas garis.",
+            "holding": "Harga masih tertahan di bawah trendline resistance. Belum ada breakout valid.",
         }
     return labels.get(latest_signal, "Status trendline belum terbaca dengan jelas.")
 
 
-def _build_auto_trendline_summary(
-    data: pd.DataFrame,
-    indicator: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Build one auto-trendline summary for chart rendering and UI details."""
-    params = _indicator_params(indicator)
-    lookback = max(params.get("lookback", 80), 20)
-    pivot_window = max(params.get("swing_window", 3), 1)
-    frame = _build_high_low_close_volume_source(data).tail(lookback).reset_index(drop=True)
-    trendline_candidate = _select_auto_trendline_candidate(frame, pivot_window)
-    if trendline_candidate is None:
-        return None
 
+def _build_trendline_summary_item(
+    frame: pd.DataFrame,
+    trendline_candidate: dict[str, Any],
+    lookback: int,
+    pivot_window: int,
+    current_price_frame: pd.DataFrame | None = None,
+    start_time_override: Any | None = None,
+    end_time_override: Any | None = None,
+    analysis_timeframe: str | None = None,
+) -> dict[str, Any] | None:
+    """Convert one raw trendline candidate into a full UI/chart summary item."""
     direction = str(trendline_candidate["direction"])
     start_index = int(trendline_candidate["start_index"])
     end_index = int(trendline_candidate["end_index"])
@@ -1066,7 +1150,8 @@ def _build_auto_trendline_summary(
         dtype="float64",
     )
     tolerance = float(trendline_candidate["tolerance"])
-    current_price = float(pd.to_numeric(frame["close"], errors="coerce").iloc[-1])
+    active_price_frame = current_price_frame if current_price_frame is not None else frame
+    current_price = float(pd.to_numeric(active_price_frame["close"], errors="coerce").iloc[-1])
     current_line_value = float(line_values.iloc[-1])
     pivot_column = "low" if direction == "up" else "high"
     pivot_points = _collect_pivot_points(frame, pivot_column, pivot_window)
@@ -1084,13 +1169,21 @@ def _build_auto_trendline_summary(
 
     last_touch_index = max(touch_indices) if touch_indices else end_index
     latest_signal = str(trendline_candidate.get("latest_signal") or "")
+    relevant_break_dates = list(
+        trendline_candidate.get("breakdown_dates", [])
+        if direction == "up"
+        else trendline_candidate.get("breakout_dates", [])
+    )
+    latest_break_date = relevant_break_dates[-1] if relevant_break_dates else None
+    has_any_relevant_break = bool(relevant_break_dates)
+    break_display_label = _trendline_break_display_label(direction, latest_signal, has_any_relevant_break)
     is_breakout_active = latest_signal in {"fresh_breakout", "breakout"}
     is_breakdown_active = latest_signal in {"fresh_breakdown", "breakdown"}
 
-    return {
+    summary = {
         **trendline_candidate,
-        "start_time": frame["time"].iloc[start_index],
-        "end_time": frame["time"].iloc[-1],
+        "start_time": start_time_override if start_time_override is not None else frame["time"].iloc[start_index],
+        "end_time": end_time_override if end_time_override is not None else frame["time"].iloc[-1],
         "lookback": lookback,
         "pivot_window": pivot_window,
         "role": "support" if direction == "up" else "resistance",
@@ -1100,28 +1193,88 @@ def _build_auto_trendline_summary(
         "line_value": current_line_value,
         "distance_to_line": abs(current_price - current_line_value),
         "status_label": _trendline_status_label(direction, latest_signal),
+        "break_display_label": break_display_label,
+        "latest_break_date": latest_break_date,
+        "has_any_relevant_break": has_any_relevant_break,
+        "relevant_break_dates": relevant_break_dates,
         "is_breakout_active": is_breakout_active,
         "is_breakdown_active": is_breakdown_active,
     }
+    if analysis_timeframe is not None:
+        summary["analysis_timeframe"] = analysis_timeframe
+    return summary
+
+
+
+def _build_auto_trendline_summaries(
+    data: pd.DataFrame,
+    indicator: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build multiple auto-trendline summaries for chart rendering and UI details."""
+    params = _indicator_params(indicator)
+    lookback = max(params.get("lookback", 80), 20)
+    pivot_window = max(params.get("swing_window", 3), 1)
+    max_trendlines = max(params.get("max_trendlines", 3), 1)
+    frame = _build_high_low_close_volume_source(data).tail(lookback).reset_index(drop=True)
+    trendline_candidates = _select_auto_trendline_candidates(frame, pivot_window, max_trendlines)
+    if not trendline_candidates:
+        return None
+
+    trendlines: list[dict[str, Any]] = []
+    for candidate in trendline_candidates:
+        summary = _build_trendline_summary_item(
+            frame=frame,
+            trendline_candidate=candidate,
+            lookback=lookback,
+            pivot_window=pivot_window,
+        )
+        if summary is not None:
+            trendlines.append(summary)
+
+    if not trendlines:
+        return None
+
+    return {
+        "primary": trendlines[0],
+        "trendlines": trendlines,
+        "lookback": lookback,
+        "pivot_window": pivot_window,
+        "max_trendlines": max_trendlines,
+    }
+
 
 
 def describe_auto_trendline(
     data: pd.DataFrame,
     indicator: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Return the auto-trendline summary for UI display."""
-    return _build_auto_trendline_summary(data, indicator)
+    """Return the primary auto-trendline summary for UI display."""
+    summary_bundle = _build_auto_trendline_summaries(data, indicator)
+    if summary_bundle is None:
+        return None
+    return summary_bundle["primary"]
 
 
-def _build_major_trendline_summary(
+
+def describe_auto_trendlines(
+    data: pd.DataFrame,
+    indicator: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return all visible auto-trendline summaries for UI display."""
+    return _build_auto_trendline_summaries(data, indicator)
+
+
+
+def _build_major_trendline_summaries(
     data: pd.DataFrame,
     indicator: dict[str, Any],
     interval_label: str | None = None,
 ) -> dict[str, Any] | None:
-    """Build one higher-timeframe major trendline summary for chart rendering and UI details."""
+    """Build multiple higher-timeframe major trendline summaries for chart rendering and UI details."""
     params = _indicator_params(indicator)
     lookback = max(params.get("lookback", 260), 60)
     pivot_window = max(params.get("swing_window", 4), 2)
+    max_trendlines = max(params.get("max_trendlines", 3), 1)
     source_frame = _build_datetime_ohlcv_source(data)
     if source_frame.empty:
         return None
@@ -1131,78 +1284,50 @@ def _build_major_trendline_summary(
     if len(analysis_frame) < max((pivot_window * 2) + 3, 12):
         return None
 
-    trendline_candidate = _select_auto_trendline_candidate(analysis_frame, pivot_window)
-    if trendline_candidate is None:
-        return None
-
-    direction = str(trendline_candidate["direction"])
-    start_index = int(trendline_candidate["start_index"])
-    end_index = int(trendline_candidate["end_index"])
-    last_index = len(analysis_frame) - 1
-    if start_index < 0 or last_index < start_index:
-        return None
-
-    comparison_frame = analysis_frame.iloc[start_index : last_index + 1]
-    line_values = pd.Series(
-        [
-            float(trendline_candidate["start_value"])
-            + (float(trendline_candidate["slope"]) * (index - start_index))
-            for index in range(start_index, last_index + 1)
-        ],
-        index=comparison_frame.index,
-        dtype="float64",
-    )
-    tolerance = float(trendline_candidate["tolerance"])
     chart_frame = _build_high_low_close_volume_source(data).reset_index(drop=True)
     if chart_frame.empty:
         return None
 
     chart_times = pd.to_datetime(chart_frame["time"], errors="coerce")
-    analysis_start_time = pd.to_datetime(analysis_frame["time"].iloc[start_index], errors="coerce")
-    aligned_start_mask = chart_times.ge(analysis_start_time)
-    if aligned_start_mask.any():
-        aligned_start_index = int(aligned_start_mask.idxmax())
-    else:
-        aligned_start_index = 0
+    trendline_candidates = _select_auto_trendline_candidates(analysis_frame, pivot_window, max_trendlines)
+    if not trendline_candidates:
+        return None
 
-    current_price = float(pd.to_numeric(chart_frame["close"], errors="coerce").iloc[-1])
-    current_line_value = float(line_values.iloc[-1])
-    pivot_column = "low" if direction == "up" else "high"
-    pivot_points = _collect_pivot_points(analysis_frame, pivot_column, pivot_window)
+    trendlines: list[dict[str, Any]] = []
+    for candidate in trendline_candidates:
+        start_index = int(candidate["start_index"])
+        analysis_start_time = pd.to_datetime(analysis_frame["time"].iloc[start_index], errors="coerce")
+        aligned_start_mask = chart_times.ge(analysis_start_time)
+        if aligned_start_mask.any():
+            aligned_start_index = int(aligned_start_mask.idxmax())
+        else:
+            aligned_start_index = 0
 
-    touch_indices = {start_index, end_index}
-    for pivot_point in pivot_points:
-        pivot_index = int(pivot_point["index"])
-        if pivot_index < start_index or pivot_index > last_index:
-            continue
-        line_value_at_pivot = float(trendline_candidate["start_value"]) + (
-            float(trendline_candidate["slope"]) * (pivot_index - start_index)
+        summary = _build_trendline_summary_item(
+            frame=analysis_frame,
+            trendline_candidate=candidate,
+            lookback=lookback,
+            pivot_window=pivot_window,
+            current_price_frame=chart_frame,
+            start_time_override=chart_frame["time"].iloc[aligned_start_index],
+            end_time_override=chart_frame["time"].iloc[-1],
+            analysis_timeframe=analysis_timeframe,
         )
-        if abs(float(pivot_point["price"]) - line_value_at_pivot) <= tolerance:
-            touch_indices.add(pivot_index)
+        if summary is not None:
+            trendlines.append(summary)
 
-    last_touch_index = max(touch_indices) if touch_indices else end_index
-    latest_signal = str(trendline_candidate.get("latest_signal") or "")
-    is_breakout_active = latest_signal in {"fresh_breakout", "breakout"}
-    is_breakdown_active = latest_signal in {"fresh_breakdown", "breakdown"}
+    if not trendlines:
+        return None
 
     return {
-        **trendline_candidate,
-        "start_time": chart_frame["time"].iloc[aligned_start_index],
-        "end_time": chart_frame["time"].iloc[-1],
+        "primary": trendlines[0],
+        "trendlines": trendlines,
         "lookback": lookback,
         "pivot_window": pivot_window,
+        "max_trendlines": max_trendlines,
         "analysis_timeframe": analysis_timeframe,
-        "role": "support" if direction == "up" else "resistance",
-        "touch_count": len(touch_indices),
-        "last_touch_gap": last_index - last_touch_index,
-        "current_price": current_price,
-        "line_value": current_line_value,
-        "distance_to_line": abs(current_price - current_line_value),
-        "status_label": _trendline_status_label(direction, latest_signal),
-        "is_breakout_active": is_breakout_active,
-        "is_breakdown_active": is_breakdown_active,
     }
+
 
 
 def describe_major_trendline(
@@ -1210,9 +1335,21 @@ def describe_major_trendline(
     indicator: dict[str, Any],
     interval_label: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return the major trendline summary for UI display."""
-    return _build_major_trendline_summary(data, indicator, interval_label)
+    """Return the primary major trendline summary for UI display."""
+    summary_bundle = _build_major_trendline_summaries(data, indicator, interval_label)
+    if summary_bundle is None:
+        return None
+    return summary_bundle["primary"]
 
+
+
+def describe_major_trendlines(
+    data: pd.DataFrame,
+    indicator: dict[str, Any],
+    interval_label: str | None = None,
+) -> dict[str, Any] | None:
+    """Return all visible major trendline summaries for UI display."""
+    return _build_major_trendline_summaries(data, indicator, interval_label)
 
 def _nearest_support_resistance_zone_half_height(frame: pd.DataFrame) -> float:
     """Estimate one reasonable half-zone size from recent volatility."""
@@ -1985,7 +2122,7 @@ def _render_parabolic_sar(chart: Any, data: pd.DataFrame, indicator: dict[str, A
 
 
 def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
-    """Render the latest valid volume-breakout consolidation zone on the main chart."""
+    """Render one breakout-from-consolidation setup on price and volume panels."""
     colors = _indicator_colors(indicator)
     summary = summarize_volume_breakout_zone(data, indicator.get("params") or {})
     if summary is None:
@@ -1993,6 +2130,7 @@ def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict
 
     zone_color = colors.get("zone", VOLUME_BREAKOUT_ZONE_COLOR)
     breakout_color = colors.get("breakout", VOLUME_BREAKOUT_BREAKOUT_COLOR)
+    low_volume_color = colors.get("low_volume", VOLUME_BREAKOUT_LOW_VOLUME_COLOR)
     border_color = breakout_color if str(summary.get("status") or "") == "breakout" else zone_color
 
     chart.box(
@@ -2005,6 +2143,24 @@ def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict
         width=1,
         style="solid",
     )
+    chart.trend_line(
+        start_time=summary["start_time"],
+        start_value=float(summary["zone_top"]),
+        end_time=summary["end_time"],
+        end_value=float(summary["zone_top"]),
+        line_color=_with_alpha(border_color, 0.95),
+        width=2,
+        style="solid",
+    )
+    chart.trend_line(
+        start_time=summary["start_time"],
+        start_value=float(summary["zone_bottom"]),
+        end_time=summary["end_time"],
+        end_value=float(summary["zone_bottom"]),
+        line_color=_with_alpha(zone_color, 0.58),
+        width=1,
+        style="dashed",
+    )
 
     label_points = [
         {
@@ -2016,7 +2172,7 @@ def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict
         {
             "time": summary["label_time"],
             "position": "above",
-            "shape": "circle",
+            "shape": "square",
             "color": border_color,
             "text": "Area Konsolidasi",
         }
@@ -2024,11 +2180,16 @@ def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict
 
     breakout_time = summary.get("breakout_time")
     breakout_label_price = summary.get("breakout_label_price")
-    breakout_volume_ratio = summary.get("breakout_volume_ratio")
     if breakout_time is not None and breakout_label_price is not None:
-        breakout_text = "Breakout Volume"
-        if breakout_volume_ratio is not None and pd.notna(breakout_volume_ratio):
-            breakout_text = f"Breakout Vol {float(breakout_volume_ratio):.2f}x"
+        chart.trend_line(
+            start_time=summary["end_time"],
+            start_value=float(summary["zone_top"]),
+            end_time=breakout_time,
+            end_value=float(summary["zone_top"]),
+            line_color=_with_alpha(breakout_color, 0.88),
+            width=2,
+            style="solid",
+        )
         label_points.append(
             {
                 "time": breakout_time,
@@ -2039,24 +2200,77 @@ def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict
             {
                 "time": breakout_time,
                 "position": "above",
-                "shape": "circle",
+                "shape": "square",
                 "color": breakout_color,
-                "text": breakout_text,
+                "text": "Breakout",
             }
         )
 
-    label_series = chart.create_line(
+    _render_text_marker_series(chart, "Volume Breakout Zone", label_points, markers)
+
+    volume_scale_id = getattr(chart, "_volume_scale_id", None)
+    low_volume_top = summary.get("low_volume_top")
+    low_volume_bottom = summary.get("low_volume_bottom", 0.0)
+    low_volume_label_value = summary.get("low_volume_label_value")
+    if volume_scale_id is None or low_volume_top is None or pd.isna(low_volume_top):
+        return
+
+    low_volume_ceiling = float(low_volume_top)
+    low_volume_label = (
+        float(low_volume_label_value)
+        if low_volume_label_value is not None and pd.notna(low_volume_label_value)
+        else low_volume_ceiling
+    )
+    volume_overlay = chart.create_line(
         name="",
         color="rgba(0, 0, 0, 0)",
         width=1,
         price_line=False,
         price_label=False,
+        price_scale_id=volume_scale_id,
     )
-    label_series.set(pd.DataFrame(label_points))
-    label_series.marker_list(markers)
-    label_series.run_script(
+    volume_overlay.set(
+        pd.DataFrame(
+            [
+                {
+                    "time": summary["start_time"],
+                    "Volume Breakout Low Volume": low_volume_ceiling,
+                },
+                {
+                    "time": summary["label_time"],
+                    "Volume Breakout Low Volume": low_volume_label,
+                },
+                {
+                    "time": summary["end_time"],
+                    "Volume Breakout Low Volume": low_volume_ceiling,
+                },
+            ]
+        )
+    )
+    volume_overlay.box(
+        start_time=summary["start_time"],
+        start_value=low_volume_ceiling,
+        end_time=summary["end_time"],
+        end_value=float(low_volume_bottom),
+        color=_with_alpha(low_volume_color, 0.42),
+        fill_color=_with_alpha(low_volume_color, 0.20),
+        width=1,
+        style="solid",
+    )
+    volume_overlay.marker_list(
+        [
+            {
+                "time": summary["label_time"],
+                "position": "above",
+                "shape": "square",
+                "color": low_volume_color,
+                "text": "Low Volume",
+            }
+        ]
+    )
+    volume_overlay.run_script(
         f"""
-        {label_series.id}.series.applyOptions({{
+        {volume_overlay.id}.series.applyOptions({{
             lineVisible: false,
             pointMarkersVisible: false,
             crosshairMarkerVisible: false,
@@ -2066,24 +2280,73 @@ def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict
         """
     )
 
-
-def _render_auto_trendline(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
-    """Render a single automatically detected trendline near the latest candles."""
+def _render_consolidation_areas(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
+    """Render multiple consolidation zones on the main chart."""
     colors = _indicator_colors(indicator)
-    trendline_summary = _build_auto_trendline_summary(data, indicator)
-    if trendline_summary is None:
+    areas = detect_consolidation_areas(data, indicator.get("params") or {})
+    if not areas:
         return
 
-    direction = str(trendline_summary["direction"])
-    chart.trend_line(
-        start_time=trendline_summary["start_time"],
-        start_value=trendline_summary["start_value"],
-        end_time=trendline_summary["end_time"],
-        end_value=trendline_summary["end_value"],
-        line_color=colors.get(direction, TRENDLINE_COLORS[direction]),
-        width=2,
-        style="solid",
-    )
+    marker_points: list[dict[str, Any]] = []
+    markers: list[dict[str, Any]] = []
+    series_name = "Area Konsolidasi"
+
+    for area in areas:
+        status = str(area.get("status") or "completed")
+        color_key = "active" if status == "active" else "zone"
+        zone_color = colors.get(color_key, CONSOLIDATION_AREA_COLORS[color_key])
+        fill_alpha = (
+            CONSOLIDATION_AREA_ACTIVE_FILL_ALPHA
+            if status == "active"
+            else CONSOLIDATION_AREA_FILL_ALPHA
+        )
+        chart.box(
+            start_time=area["start_time"],
+            start_value=float(area["zone_top"]),
+            end_time=area["end_time"],
+            end_value=float(area["zone_bottom"]),
+            color=_with_alpha(zone_color, 0.38),
+            fill_color=_with_alpha(zone_color, fill_alpha),
+            width=1,
+            style="solid",
+        )
+        marker_points.append(
+            {
+                "time": area["label_time"],
+                series_name: float(area["label_price"]),
+            }
+        )
+        markers.append(
+            {
+                "time": area["label_time"],
+                "position": "above",
+                "shape": "square",
+                "color": zone_color,
+                "text": "Konsolidasi Aktif" if status == "active" else "Area Konsolidasi",
+            }
+        )
+
+    _render_text_marker_series(chart, series_name, marker_points, markers)
+
+def _render_auto_trendline(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
+    """Render multiple automatically detected minor trendlines near the latest candles."""
+    colors = _indicator_colors(indicator)
+    summary_bundle = _build_auto_trendline_summaries(data, indicator)
+    if summary_bundle is None:
+        return
+
+    for index, trendline_summary in enumerate(summary_bundle["trendlines"]):
+        direction = str(trendline_summary["direction"])
+        chart.trend_line(
+            start_time=trendline_summary["start_time"],
+            start_value=trendline_summary["start_value"],
+            end_time=trendline_summary["end_time"],
+            end_value=trendline_summary["end_value"],
+            line_color=colors.get(direction, TRENDLINE_COLORS[direction]),
+            width=2 if index == 0 else 1,
+            style="solid",
+        )
+
 
 
 def _render_major_trendline(
@@ -2092,23 +2355,23 @@ def _render_major_trendline(
     indicator: dict[str, Any],
     interval_label: str | None = None,
 ) -> None:
-    """Render one major higher-timeframe trendline on the main chart."""
+    """Render multiple major higher-timeframe trendlines on the main chart."""
     colors = _indicator_colors(indicator)
-    trendline_summary = _build_major_trendline_summary(data, indicator, interval_label)
-    if trendline_summary is None:
+    summary_bundle = _build_major_trendline_summaries(data, indicator, interval_label)
+    if summary_bundle is None:
         return
 
-    direction = str(trendline_summary["direction"])
-    chart.trend_line(
-        start_time=trendline_summary["start_time"],
-        start_value=trendline_summary["start_value"],
-        end_time=trendline_summary["end_time"],
-        end_value=trendline_summary["end_value"],
-        line_color=colors.get(direction, TRENDLINE_COLORS[direction]),
-        width=3,
-        style="solid",
-    )
-
+    for index, trendline_summary in enumerate(summary_bundle["trendlines"]):
+        direction = str(trendline_summary["direction"])
+        chart.trend_line(
+            start_time=trendline_summary["start_time"],
+            start_value=trendline_summary["start_value"],
+            end_time=trendline_summary["end_time"],
+            end_value=trendline_summary["end_value"],
+            line_color=colors.get(direction, TRENDLINE_COLORS[direction]),
+            width=3 if index == 0 else 2,
+            style="solid",
+        )
 
 def _render_nearest_support_resistance(
     chart: Any,
@@ -2190,7 +2453,9 @@ def _render_strong_support_resistance(
 
 def _render_fibonacci_levels(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
     """Render Fibonacci retracement levels on the main chart."""
-    lookback = _indicator_params(indicator).get("lookback", 120)
+    params = _indicator_params(indicator)
+    lookback = params.get("lookback", 120)
+    swing_direction = str(params.get("swing_direction", "low_to_high")).strip().lower()
     colors = _indicator_colors(indicator)
     indicator_frame = _build_high_low_close_volume_source(data).tail(lookback)
     if indicator_frame.empty or len(indicator_frame) < 2:
@@ -2212,7 +2477,10 @@ def _render_fibonacci_levels(chart: Any, data: pd.DataFrame, indicator: dict[str
 
     for ratio, default_color in FIBONACCI_LEVELS:
         level_color = line_override if use_monochrome else default_color
-        level_price = highest_high - (price_range * ratio)
+        if swing_direction == "high_to_low":
+            level_price = highest_high - (price_range * ratio)
+        else:
+            level_price = lowest_low + (price_range * ratio)
         level_configs.append(
             {
                 "ratio": ratio,
@@ -2223,17 +2491,15 @@ def _render_fibonacci_levels(chart: Any, data: pd.DataFrame, indicator: dict[str
         )
 
     for index in range(1, len(level_configs)):
-        upper_level = level_configs[index - 1]
-        lower_level = level_configs[index]
-        band_color = (
-            line_override if use_monochrome else lower_level["color"]
-        )
+        previous_level = level_configs[index - 1]
+        current_level = level_configs[index]
+        band_color = line_override if use_monochrome else current_level["color"]
         band_alpha = FIBONACCI_FILL_ALPHAS[min(index - 1, len(FIBONACCI_FILL_ALPHAS) - 1)]
         chart.box(
             start_time=start_time,
-            start_value=upper_level["price"],
+            start_value=max(previous_level["price"], current_level["price"]),
             end_time=end_time,
-            end_value=lower_level["price"],
+            end_value=min(previous_level["price"], current_level["price"]),
             color="rgba(0, 0, 0, 0)",
             fill_color=_with_alpha(band_color, band_alpha),
             width=1,
@@ -2258,6 +2524,7 @@ def _render_fibonacci_levels(chart: Any, data: pd.DataFrame, indicator: dict[str
             text=level["label"],
             axis_label_visible=False,
         )
+
 
 
 def _render_pivot_point_standard(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
@@ -2295,6 +2562,51 @@ def _render_pivot_point_standard(chart: Any, data: pd.DataFrame, indicator: dict
         )
 
 
+def _prepare_marker_series_frame(
+    marker_points: list[dict[str, Any]],
+    series_name: str,
+) -> pd.DataFrame:
+    """Build one stable marker data frame with unique sorted timestamps."""
+    marker_frame = pd.DataFrame(marker_points)
+    if marker_frame.empty or "time" not in marker_frame or series_name not in marker_frame:
+        return pd.DataFrame(columns=["time", series_name])
+
+    marker_frame = marker_frame[["time", series_name]].copy()
+    marker_frame["time"] = pd.to_datetime(marker_frame["time"], errors="coerce")
+    marker_frame = marker_frame.dropna(subset=["time", series_name])
+    if marker_frame.empty:
+        return pd.DataFrame(columns=["time", series_name])
+
+    marker_frame = marker_frame.sort_values("time")
+    marker_frame = marker_frame.drop_duplicates(subset=["time"], keep="last")
+    return marker_frame.reset_index(drop=True)
+
+
+
+def _ensure_marker_series_interval(chart: Any, marker_series: Any, marker_frame: pd.DataFrame) -> None:
+    """Prevent zero-interval marker series when labels share the same candle time."""
+    current_interval = float(getattr(marker_series, "_interval", 0) or 0)
+    if current_interval > 0:
+        return
+
+    chart_interval = float(getattr(chart, "_interval", 0) or 0)
+    if chart_interval > 0:
+        marker_series._interval = chart_interval
+        return
+
+    if len(marker_frame) >= 2:
+        unique_times = pd.to_datetime(marker_frame["time"], errors="coerce").dropna().drop_duplicates().sort_values()
+        if len(unique_times) >= 2:
+            time_deltas = unique_times.diff().dropna()
+            positive_deltas = time_deltas[time_deltas > pd.Timedelta(0)]
+            if not positive_deltas.empty:
+                marker_series._interval = max(float(positive_deltas.iloc[0].total_seconds()), 1.0)
+                return
+
+    marker_series._interval = 1
+
+
+
 def _render_text_marker_series(
     chart: Any,
     series_name: str,
@@ -2305,6 +2617,10 @@ def _render_text_marker_series(
     if not marker_points or not markers:
         return
 
+    marker_frame = _prepare_marker_series_frame(marker_points, series_name)
+    if marker_frame.empty:
+        return
+
     marker_series = chart.create_line(
         name="",
         color="rgba(0, 0, 0, 0)",
@@ -2312,7 +2628,8 @@ def _render_text_marker_series(
         price_line=False,
         price_label=False,
     )
-    marker_series.set(pd.DataFrame(marker_points))
+    marker_series.set(marker_frame)
+    _ensure_marker_series_interval(chart, marker_series, marker_frame)
     marker_series.marker_list(markers)
     marker_series.run_script(
         f"""
@@ -2345,7 +2662,7 @@ def _render_candle_patterns(chart: Any, data: pd.DataFrame, indicator: dict[str,
             {
                 "time": row.time,
                 "position": str(row.position),
-                "shape": "circle",
+                "shape": "square",
                 "color": colors.get(direction, CANDLE_PATTERN_COLORS.get(direction, "#f8fafc")),
                 "text": str(row.short_label),
             }
@@ -2376,9 +2693,9 @@ def _render_chart_patterns(chart: Any, data: pd.DataFrame, indicator: dict[str, 
                 start_value=float(point_start["price"]),
                 end_time=point_end["time"],
                 end_value=float(point_end["price"]),
-                line_color=_with_alpha(line_base_color, 0.26),
-                width=1,
-                style="dashed",
+                line_color=_with_alpha(line_base_color, 0.72),
+                width=2,
+                style="solid",
             )
         for line in pattern.get("lines") or []:
             chart.trend_line(
@@ -2386,9 +2703,9 @@ def _render_chart_patterns(chart: Any, data: pd.DataFrame, indicator: dict[str, 
                 start_value=float(line["start_value"]),
                 end_time=line["end_time"],
                 end_value=float(line["end_value"]),
-                line_color=_with_alpha(tone_color, 0.88),
+                line_color=_with_alpha(line_base_color, 0.96),
                 width=2,
-                style="dashed" if direction == "neutral" else "solid",
+                style="solid",
             )
 
         marker_points.append({"time": pattern["label_time"], series_name: float(pattern["label_price"])})
@@ -2396,7 +2713,7 @@ def _render_chart_patterns(chart: Any, data: pd.DataFrame, indicator: dict[str, 
             {
                 "time": pattern["label_time"],
                 "position": "below" if direction == "bullish" else "above",
-                "shape": "circle",
+                "shape": "square",
                 "color": tone_color,
                 "text": str(pattern["short_label"]),
             }
@@ -2427,6 +2744,9 @@ def _render_overlay_indicator(
         return
     if indicator_key == "CHART_PATTERN":
         _render_chart_patterns(chart, data, indicator)
+        return
+    if indicator_key == "CONSOLIDATION_AREA":
+        _render_consolidation_areas(chart, data, indicator)
         return
     if indicator_key == "VOLUME_BREAKOUT_ZONE":
         _render_volume_breakout_zone(chart, data, indicator)
@@ -2774,7 +3094,7 @@ def _render_backtest_trade_markers(chart: Any, trade_log: pd.DataFrame | None) -
                 {
                     "time": entry_time,
                     "position": "below",
-                    "shape": "circle",
+                    "shape": "square",
                     "color": "#22c55e",
                     "text": "Buy",
                 }
@@ -2788,25 +3108,13 @@ def _render_backtest_trade_markers(chart: Any, trade_log: pd.DataFrame | None) -
                 {
                     "time": exit_time,
                     "position": "above",
-                    "shape": "circle",
+                    "shape": "square",
                     "color": "#ef4444",
                     "text": "Sell",
                 }
             )
 
-    if not marker_points:
-        return
-
-    marker_series = chart.create_line(
-        name="Backtest Signal",
-        color="rgba(0, 0, 0, 0)",
-        width=1,
-        price_line=False,
-        price_label=False,
-    )
-    marker_series.set(pd.DataFrame(marker_points))
-    marker_series.marker_list(markers)
-
+    _render_text_marker_series(chart, "Backtest Signal", marker_points, markers)
 
 def render_candlestick_chart(
     data: pd.DataFrame,
@@ -2840,6 +3148,7 @@ def render_candlestick_chart(
             scale_margin_top=VOLUME_PANEL_TOP_MARGIN,
             scale_margin_bottom=VOLUME_PANEL_BOTTOM_MARGIN,
         )
+        setattr(chart, "_volume_scale_id", volume_histogram.id)
         volume_histogram.set(
             volume_frame[["time", "volume", "color"]].rename(columns={"volume": "Volume"})
         )
@@ -2892,6 +3201,37 @@ def render_indicator_charts(
         if _indicator_key(indicator) not in PANEL_INDICATOR_KEYS:
             continue
         _render_single_indicator_chart(indicator, data)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

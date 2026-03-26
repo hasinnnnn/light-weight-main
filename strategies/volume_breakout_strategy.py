@@ -154,6 +154,29 @@ def build_volume_breakout_analysis(
 
 
 
+def _build_low_volume_overlay(zone_frame: pd.DataFrame) -> dict[str, float]:
+    """Return the panel-volume range used to highlight low volume during consolidation."""
+    if zone_frame is None or zone_frame.empty:
+        return {
+            "low_volume_top": 1.0,
+            "low_volume_bottom": 0.0,
+            "low_volume_label_value": 1.08,
+        }
+
+    volume_values = pd.to_numeric(zone_frame["volume"], errors="coerce").fillna(0.0)
+    reference_values = pd.to_numeric(zone_frame.get("reference_volume"), errors="coerce").dropna()
+    top_value = max(
+        float(volume_values.max()) if not volume_values.empty else 0.0,
+        float(reference_values.max()) if not reference_values.empty else 0.0,
+        1.0,
+    )
+    return {
+        "low_volume_top": top_value * 1.05,
+        "low_volume_bottom": 0.0,
+        "low_volume_label_value": top_value * 1.08,
+    }
+
+
 def _build_watch_summary(
     prepared: pd.DataFrame,
     normalized_params: dict[str, float | int],
@@ -195,6 +218,7 @@ def _build_watch_summary(
     end_index = len(prepared) - 1
     label_index = start_index + ((end_index - start_index) // 2)
     zone_height = max(zone_top - zone_bottom, abs(zone_top) * 0.004, 0.01)
+    zone_frame = prepared.iloc[start_index : end_index + 1].copy()
     return {
         "status": "watch",
         "status_label": "Masih konsolidasi",
@@ -208,6 +232,7 @@ def _build_watch_summary(
         "breakout_label_price": None,
         "breakout_volume_ratio": None,
         "consolidation_volume_ratio": consolidation_volume_ratio,
+        **_build_low_volume_overlay(zone_frame),
     }
 
 
@@ -216,37 +241,31 @@ def summarize_volume_breakout_zone(
     frame: pd.DataFrame,
     params: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Return the current or latest recent consolidation zone for chart overlays."""
+    """Return the latest breakout zone, or the current watch zone when no breakout exists."""
     normalized_params = _normalize_volume_breakout_params(params)
     prepared = build_volume_breakout_analysis(frame, normalized_params)
     if prepared.empty:
         return None
 
     watch_summary = _build_watch_summary(prepared, normalized_params)
-    if watch_summary is not None:
+
+    breakout_rows = prepared.loc[prepared["entry_signal"]]
+    if breakout_rows.empty:
         return watch_summary
 
-    recent_lookback = max(
-        int(normalized_params["consolidation_bars"]) * 3,
-        int(normalized_params["volume_ma_period"]),
-        12,
-    )
-    recent_breakouts = prepared.tail(recent_lookback).loc[prepared.tail(recent_lookback)["entry_signal"]]
-    if recent_breakouts.empty:
-        return None
-
-    breakout_row = recent_breakouts.iloc[-1]
+    breakout_row = breakout_rows.iloc[-1]
     breakout_index = int(breakout_row.name)
     start_index = int(breakout_row["consolidation_start_index"])
     end_index = int(breakout_row["consolidation_end_index"])
     if start_index < 0 or end_index < start_index:
-        return None
+        return watch_summary
 
     label_index = start_index + ((end_index - start_index) // 2)
     zone_top = float(breakout_row["zone_top"])
     zone_bottom = float(breakout_row["zone_bottom"])
     breakout_close = float(breakout_row["close"])
     zone_height = max(zone_top - zone_bottom, abs(zone_top) * 0.004, 0.01)
+    zone_frame = prepared.iloc[start_index : end_index + 1].copy()
     return {
         "status": "breakout",
         "status_label": "Breakout volume kuat",
@@ -260,6 +279,7 @@ def summarize_volume_breakout_zone(
         "breakout_label_price": max(zone_top, breakout_close) + (zone_height * 0.35),
         "breakout_volume_ratio": float(breakout_row["breakout_volume_ratio"]),
         "consolidation_volume_ratio": float(breakout_row["consolidation_volume_ratio"]),
+        **_build_low_volume_overlay(zone_frame),
     }
 
 
@@ -288,3 +308,5 @@ def prepare_volume_breakout_strategy(
             f"atau setelah {exit_after_bars} bar sejak breakout."
         ),
     )
+
+

@@ -125,7 +125,7 @@ def initialize_indicator_state() -> None:
 def initialize_session_state() -> None:
     """Set app defaults so selections and the last result survive reruns."""
     defaults = {
-        "symbol_input": "IHSG",
+        "symbol_input": "BUMI",
         "interval_option": "1 hari",
         "period_option": "YTD",
         "loaded_result": None,
@@ -432,6 +432,7 @@ def clear_indicator_editor_draft(indicator_id: str) -> None:
 def select_indicator_color(widget_key: str, color_value: str) -> None:
     """Store a preset color selection for the current indicator editor."""
     st.session_state[widget_key] = color_value.lower()
+
 
 
 

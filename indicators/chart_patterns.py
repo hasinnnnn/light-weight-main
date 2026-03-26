@@ -4,6 +4,8 @@ from typing import Any
 
 import pandas as pd
 
+from common.time_utils import format_short_date_label
+
 CHART_PATTERN_DEFINITIONS: dict[str, dict[str, str]] = {
     "double_top": {
         "label": "Double Top",
@@ -604,7 +606,7 @@ def detect_chart_patterns(
             candidates.append(candidate)
 
     candidates.sort(key=lambda item: item["end_time"])
-    return candidates[-12:]
+    return candidates
 
 
 def summarize_chart_patterns(
@@ -623,7 +625,7 @@ def summarize_chart_patterns(
             "label": latest["label"],
             "short_label": latest["short_label"],
             "description": latest["description"],
-            "date_label": pd.to_datetime(latest["end_time"], errors="coerce").strftime("%Y-%m-%d"),
+            "date_label": format_short_date_label(latest["end_time"]),
             "detail_lines": latest.get("detail_lines") or [],
         }
 
@@ -633,7 +635,7 @@ def summarize_chart_patterns(
             "short_label": pattern["short_label"],
             "description": pattern["description"],
             "direction": pattern["direction"],
-            "date_label": pd.to_datetime(pattern["end_time"], errors="coerce").strftime("%Y-%m-%d"),
+            "date_label": format_short_date_label(pattern["end_time"]),
             "detail_lines": pattern.get("detail_lines") or [],
         }
         for pattern in patterns
@@ -643,3 +645,5 @@ def summarize_chart_patterns(
         "latest_by_direction": latest_by_direction,
         "total_patterns": int(len(patterns)),
     }
+
+

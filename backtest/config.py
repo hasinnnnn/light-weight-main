@@ -601,6 +601,7 @@ def build_backtest_preview_indicator_config(
             "colors": {
                 "zone": "#38bdf8",
                 "breakout": "#22c55e",
+                "low_volume": "#94a3b8",
             },
             "visible": True,
             "source": "backtest",
@@ -609,6 +610,7 @@ def build_backtest_preview_indicator_config(
         }
 
     raise ValueError(f"Unsupported backtest strategy: {strategy_key}")
+
 
 
 
