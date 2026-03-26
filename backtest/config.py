@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -14,6 +14,21 @@ BACKTEST_STRATEGY_CATALOG = [
         "key": "MACD",
         "label": "MACD",
         "description": "Trend-following MACD dengan filter trend dan opsi exit momentum.",
+    },
+    {
+        "key": "BREAK_EMA",
+        "label": "Break EMA",
+        "description": "Buy saat harga pullback ke EMA dan hold sampai close jebol di bawah EMA.",
+    },
+    {
+        "key": "PARABOLIC_SAR",
+        "label": "Parabolic SAR",
+        "description": "Trend-following Parabolic SAR dengan filter MA 200 yang lebih simpel dan bersih.",
+    },
+    {
+        "key": "VOLUME_BREAKOUT",
+        "label": "Volume Breakout",
+        "description": "Breakout dari area konsolidasi sempit dengan volume rendah lalu meledak saat breakout.",
     },
 ]
 
@@ -56,6 +71,10 @@ MACD_EXIT_MODES = [
     "macd_cross_down_signal",
     "macd_cross_down_zero",
     "fixed_tp_sl",
+]
+BREAK_EMA_EXIT_MODES = [
+    "ema_breakdown",
+    "tp_sl_trailing_only",
 ]
 
 
@@ -104,19 +123,54 @@ def get_default_macd_params() -> dict[str, Any]:
     }
 
 
+def get_default_break_ema_params() -> dict[str, Any]:
+    """Return the default Break EMA strategy settings."""
+    return {
+        "ema_period": 10,
+        "exit_mode": "ema_breakdown",
+    }
+
+
+def get_default_parabolic_sar_params() -> dict[str, Any]:
+    """Return the default Parabolic SAR strategy settings."""
+    return {
+        "psar_acceleration_pct": 2.0,
+        "psar_max_acceleration_pct": 20.0,
+    }
+
+
+def get_default_volume_breakout_params() -> dict[str, Any]:
+    """Return the default Volume Breakout strategy settings."""
+    return {
+        "consolidation_bars": 10,
+        "max_consolidation_range_pct": 6.0,
+        "volume_ma_period": 20,
+        "consolidation_volume_ratio_max": 0.80,
+        "breakout_volume_ratio_min": 1.80,
+        "breakout_buffer_pct": 0.20,
+        "exit_after_bars": 1,
+    }
+
+
 def get_default_strategy_params(strategy_key: str) -> dict[str, Any]:
     """Return the default settings for one strategy."""
-    normalized_key = str(strategy_key or "").strip().upper()
+    normalized_key = str(strategy_key or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     if normalized_key == "RSI":
         return get_default_rsi_params()
     if normalized_key == "MACD":
         return get_default_macd_params()
+    if normalized_key == "BREAK_EMA":
+        return get_default_break_ema_params()
+    if normalized_key == "PARABOLIC_SAR":
+        return get_default_parabolic_sar_params()
+    if normalized_key == "VOLUME_BREAKOUT":
+        return get_default_volume_breakout_params()
     raise ValueError(f"Unsupported backtest strategy: {strategy_key}")
 
 
 def get_strategy_label(strategy_key: str) -> str:
     """Return a human-friendly strategy label."""
-    normalized_key = str(strategy_key or "").strip().upper()
+    normalized_key = str(strategy_key or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     return BACKTEST_STRATEGY_LABELS.get(normalized_key, normalized_key or "Unknown")
 
 
@@ -290,7 +344,7 @@ def normalize_strategy_backtest_params(
     raw_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize one strategy parameter dictionary."""
-    normalized_key = str(strategy_key or "").strip().upper()
+    normalized_key = str(strategy_key or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     raw_params = raw_params or {}
 
     if normalized_key == "RSI":
@@ -378,46 +432,183 @@ def normalize_strategy_backtest_params(
             "exit_mode": exit_mode,
         }
 
+    if normalized_key == "BREAK_EMA":
+        defaults = get_default_break_ema_params()
+        exit_mode = str(raw_params.get("exit_mode", defaults["exit_mode"])).strip()
+        if exit_mode not in BREAK_EMA_EXIT_MODES:
+            exit_mode = defaults["exit_mode"]
+        return {
+            "ema_period": _coerce_int(
+                raw_params.get("ema_period"),
+                defaults["ema_period"],
+                minimum=1,
+            ),
+            "exit_mode": exit_mode,
+        }
+
+    if normalized_key == "PARABOLIC_SAR":
+        defaults = get_default_parabolic_sar_params()
+        acceleration_pct = _coerce_float(
+            raw_params.get("psar_acceleration_pct"),
+            defaults["psar_acceleration_pct"],
+            minimum=0.1,
+        )
+        return {
+            "psar_acceleration_pct": acceleration_pct,
+            "psar_max_acceleration_pct": _coerce_float(
+                raw_params.get("psar_max_acceleration_pct"),
+                defaults["psar_max_acceleration_pct"],
+                minimum=acceleration_pct,
+            ),
+        }
+
+    if normalized_key == "VOLUME_BREAKOUT":
+        defaults = get_default_volume_breakout_params()
+        return {
+            "consolidation_bars": _coerce_int(
+                raw_params.get("consolidation_bars"),
+                defaults["consolidation_bars"],
+                minimum=3,
+            ),
+            "max_consolidation_range_pct": _coerce_float(
+                raw_params.get("max_consolidation_range_pct"),
+                defaults["max_consolidation_range_pct"],
+                minimum=0.1,
+            ),
+            "volume_ma_period": _coerce_int(
+                raw_params.get("volume_ma_period"),
+                defaults["volume_ma_period"],
+                minimum=3,
+            ),
+            "consolidation_volume_ratio_max": _coerce_float(
+                raw_params.get("consolidation_volume_ratio_max"),
+                defaults["consolidation_volume_ratio_max"],
+                minimum=0.1,
+            ),
+            "breakout_volume_ratio_min": _coerce_float(
+                raw_params.get("breakout_volume_ratio_min"),
+                defaults["breakout_volume_ratio_min"],
+                minimum=1.0,
+            ),
+            "breakout_buffer_pct": _coerce_float(
+                raw_params.get("breakout_buffer_pct"),
+                defaults["breakout_buffer_pct"],
+                minimum=0.0,
+            ),
+            "exit_after_bars": _coerce_int(
+                raw_params.get("exit_after_bars"),
+                defaults["exit_after_bars"],
+                minimum=1,
+            ),
+        }
+
     raise ValueError(f"Unsupported backtest strategy: {strategy_key}")
 
 
 def build_backtest_preview_indicator_config(
     strategy_key: str,
     strategy_params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build one temporary indicator config for chart preview."""
-    normalized_key = str(strategy_key or "").strip().upper()
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Build one temporary indicator config or overlay bundle for chart preview."""
+    normalized_key = str(strategy_key or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     normalized_params = normalize_strategy_backtest_params(normalized_key, strategy_params)
 
     if normalized_key == "RSI":
+        rsi_period = int(normalized_params["rsi_period"])
         return {
             "id": "backtest-preview-rsi",
             "key": "RSI",
-            "params": {"length": int(normalized_params["rsi_period"])},
+            "params": {"length": rsi_period},
             "colors": {},
             "visible": True,
             "source": "backtest",
             "title_prefix": "Backtest",
+            "display_label": f"RSI {rsi_period}",
         }
 
     if normalized_key == "MACD":
+        fast_length = int(normalized_params["macd_fast_period"])
+        slow_length = int(normalized_params["macd_slow_period"])
+        signal_length = int(normalized_params["macd_signal_period"])
         return {
             "id": "backtest-preview-macd",
             "key": "MACD",
             "params": {
-                "fast_length": int(normalized_params["macd_fast_period"]),
-                "slow_length": int(normalized_params["macd_slow_period"]),
-                "signal_length": int(normalized_params["macd_signal_period"]),
+                "fast_length": fast_length,
+                "slow_length": slow_length,
+                "signal_length": signal_length,
             },
             "colors": {},
             "visible": True,
             "source": "backtest",
             "title_prefix": "Backtest",
+            "display_label": f"MACD {fast_length} / {slow_length} / {signal_length}",
+        }
+
+    if normalized_key == "BREAK_EMA":
+        ema_period = int(normalized_params["ema_period"])
+        return {
+            "id": "backtest-preview-break-ema",
+            "key": "EMA",
+            "params": {"length": ema_period},
+            "colors": {},
+            "visible": True,
+            "source": "backtest",
+            "title_prefix": "Backtest",
+            "display_label": f"Break EMA {ema_period}",
+        }
+
+    if normalized_key == "PARABOLIC_SAR":
+        return [
+            {
+                "id": "backtest-preview-psar",
+                "key": "PARABOLIC_SAR",
+                "params": {
+                    "acceleration_pct": int(round(float(normalized_params["psar_acceleration_pct"]))),
+                    "max_acceleration_pct": int(round(float(normalized_params["psar_max_acceleration_pct"]))),
+                },
+                "colors": {},
+                "visible": True,
+                "source": "backtest",
+                "title_prefix": "Backtest",
+                "display_label": "Parabolic SAR",
+            },
+            {
+                "id": "backtest-preview-psar-ma-200",
+                "key": "MA",
+                "params": {"length": 200},
+                "colors": {"line": "#e2e8f0"},
+                "visible": True,
+                "source": "backtest_helper",
+            },
+        ]
+
+    if normalized_key == "VOLUME_BREAKOUT":
+        consolidation_bars = int(normalized_params["consolidation_bars"])
+        volume_ma_period = int(normalized_params["volume_ma_period"])
+        return {
+            "id": "backtest-preview-volume-breakout",
+            "key": "VOLUME_BREAKOUT_ZONE",
+            "params": {
+                "consolidation_bars": consolidation_bars,
+                "max_consolidation_range_pct": float(normalized_params["max_consolidation_range_pct"]),
+                "volume_ma_period": volume_ma_period,
+                "consolidation_volume_ratio_max": float(normalized_params["consolidation_volume_ratio_max"]),
+                "breakout_volume_ratio_min": float(normalized_params["breakout_volume_ratio_min"]),
+                "breakout_buffer_pct": float(normalized_params["breakout_buffer_pct"]),
+                "exit_after_bars": int(normalized_params["exit_after_bars"]),
+            },
+            "colors": {
+                "zone": "#38bdf8",
+                "breakout": "#22c55e",
+            },
+            "visible": True,
+            "source": "backtest",
+            "title_prefix": "Backtest",
+            "display_label": f"Volume Breakout {consolidation_bars} / {volume_ma_period}",
         }
 
     raise ValueError(f"Unsupported backtest strategy: {strategy_key}")
-
-
 
 
 

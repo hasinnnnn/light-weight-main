@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import streamlit as st
 
@@ -91,7 +91,7 @@ def main() -> None:
         )
         if st.session_state.backtest_result is not None:
             render_backtest_result_card(st.session_state.backtest_result)
-        render_indicator_explanation_card()
+        render_indicator_explanation_card(indicator_configs)
     except (ChartServiceError, ModuleNotFoundError) as exc:
         st.error(str(exc))
         st.code("pip install -r requirements.txt")
@@ -99,4 +99,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

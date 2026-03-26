@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -7,6 +7,9 @@ import streamlit as st
 from backtest.config import (
     build_backtest_preview_indicator_config,
     get_default_backtest_general_params,
+    get_default_break_ema_params,
+    get_default_parabolic_sar_params,
+    get_default_volume_breakout_params,
     get_default_macd_params,
     get_default_rsi_params,
     normalize_general_backtest_params,
@@ -56,7 +59,7 @@ def normalize_indicator_instance(raw_indicator: Any) -> dict[str, Any] | None:
     if not isinstance(raw_indicator, dict):
         return None
 
-    indicator_key = str(raw_indicator.get("key") or "").strip().upper()
+    indicator_key = str(raw_indicator.get("key") or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     if indicator_key not in INDICATOR_CATALOG_BY_KEY:
         return None
 
@@ -79,7 +82,7 @@ def migrate_legacy_indicator_state(raw_indicators: Any) -> list[dict[str, Any]]:
 
     if isinstance(raw_indicators, list):
         for raw_indicator in raw_indicators:
-            indicator_key = str(raw_indicator or "").strip().upper()
+            indicator_key = str(raw_indicator or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
             if indicator_key not in INDICATOR_CATALOG_BY_KEY or indicator_key in seen_keys:
                 continue
             migrated_indicators.append(create_indicator_instance(indicator_key))
@@ -138,6 +141,9 @@ def initialize_session_state() -> None:
         "backtest_params_general": get_default_backtest_general_params(),
         "backtest_params_rsi": get_default_rsi_params(),
         "backtest_params_macd": get_default_macd_params(),
+        "backtest_params_break_ema": get_default_break_ema_params(),
+        "backtest_params_parabolic_sar": get_default_parabolic_sar_params(),
+        "backtest_params_volume_breakout": get_default_volume_breakout_params(),
         "backtest_result": None,
         "backtest_period_label": "YTD",
         "backtest_enabled": False,
@@ -170,7 +176,7 @@ def initialize_session_state() -> None:
     selection_version = int(st.session_state.get("backtest_strategy_selection_version", 0))
     if selection_version < 1:
         if (
-            str(st.session_state.selected_backtest_strategy or "").strip().upper() == "RSI"
+            str(st.session_state.selected_backtest_strategy or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR") == "RSI"
             and not st.session_state.backtest_enabled
             and st.session_state.backtest_result is None
         ):
@@ -193,7 +199,13 @@ def request_data_reload() -> None:
 
 def selected_backtest_strategy_params() -> dict[str, Any]:
     """Return the parameter dictionary for the selected backtest strategy."""
-    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper()
+    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
+    if selected_strategy == "VOLUME_BREAKOUT":
+        return st.session_state.backtest_params_volume_breakout
+    if selected_strategy == "PARABOLIC_SAR":
+        return st.session_state.backtest_params_parabolic_sar
+    if selected_strategy == "BREAK_EMA":
+        return st.session_state.backtest_params_break_ema
     if selected_strategy == "MACD":
         return st.session_state.backtest_params_macd
     if selected_strategy == "RSI":
@@ -224,10 +236,10 @@ def remove_backtest_indicator() -> None:
 
 
 def build_effective_indicator_configs() -> list[dict[str, Any]]:
-    """Add one temporary RSI/MACD backtest indicator when needed."""
+    """Add temporary backtest preview indicators when needed."""
     indicator_configs = list(st.session_state.active_indicators)
-    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper()
-    if selected_strategy not in {"RSI", "MACD"}:
+    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
+    if selected_strategy not in {"RSI", "MACD", "BREAK_EMA", "PARABOLIC_SAR", "VOLUME_BREAKOUT"}:
         return indicator_configs
 
     should_render_backtest_indicator = (
@@ -245,6 +257,9 @@ def build_effective_indicator_configs() -> list[dict[str, Any]]:
         )
     except ValueError:
         return indicator_configs
+
+    if isinstance(preview_indicator, list):
+        return [*indicator_configs, *preview_indicator]
     return [*indicator_configs, preview_indicator]
 
 
@@ -262,7 +277,7 @@ def run_selected_backtest(show_spinner: bool = True) -> None:
         st.session_state.backtest_refresh_requested = False
         return
 
-    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper()
+    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     st.session_state.backtest_period_label = st.session_state.period_option
     st.session_state.show_indicator_preview = bool(
         st.session_state.backtest_params_general.get("show_indicator_preview", True)
@@ -407,8 +422,9 @@ def clear_indicator_editor_draft(indicator_id: str) -> None:
         return
 
     indicator_definition = INDICATOR_CATALOG_BY_KEY[indicator["key"]]
-    for field in indicator_definition["fields"]:
-        st.session_state.pop(indicator_param_widget_key(indicator_id, field["name"]), None)
+    normalized_params = normalize_indicator_params(indicator["key"], indicator.get("params"))
+    for field_name in normalized_params:
+        st.session_state.pop(indicator_param_widget_key(indicator_id, str(field_name)), None)
     for color_field in indicator_definition.get("color_fields", []):
         st.session_state.pop(indicator_color_widget_key(indicator_id, color_field["name"]), None)
 
@@ -416,5 +432,14 @@ def clear_indicator_editor_draft(indicator_id: str) -> None:
 def select_indicator_color(widget_key: str, color_value: str) -> None:
     """Store a preset color selection for the current indicator editor."""
     st.session_state[widget_key] = color_value.lower()
+
+
+
+
+
+
+
+
+
 
 

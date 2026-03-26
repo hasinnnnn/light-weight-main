@@ -1,6 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
+
+from indicators.candle_patterns import (
+    ALL_CANDLE_PATTERN_KEYS,
+    CANDLE_PATTERN_DEFINITIONS,
+    get_default_candle_pattern_params,
+    normalize_candle_pattern_params,
+)
+from indicators.chart_patterns import (
+    ALL_CHART_PATTERN_KEYS,
+    CHART_PATTERN_DEFINITIONS,
+    get_default_chart_pattern_params,
+    normalize_chart_pattern_params,
+)
 
 INDICATOR_CATALOG = [
     {
@@ -240,6 +253,57 @@ INDICATOR_CATALOG = [
         "fields": [],
         "color_fields": [
             {"name": "line", "label": "Parabolic SAR", "default": "#38bdf8"},
+        ],
+    },
+    {
+        "key": "CANDLE_PATTERN",
+        "modal_label": "Candle Pattern",
+        "description": "Deteksi pola candle umum dan tampilkan label singkat langsung di atas atau bawah candle.",
+        "placement": "overlay",
+        "fields": [
+            {
+                "name": "lookback",
+                "label": "Lookback Candle",
+                "default": 180,
+                "min_value": 30,
+            }
+        ],
+        "color_fields": [
+            {"name": "bullish", "label": "Pattern Bullish", "default": "#22c55e"},
+            {"name": "bearish", "label": "Pattern Bearish", "default": "#ef4444"},
+            {"name": "neutral", "label": "Pattern Netral", "default": "#f8fafc"},
+        ],
+    },
+    {
+        "key": "CHART_PATTERN",
+        "modal_label": "Chart Pattern",
+        "description": "Deteksi pola chart besar seperti double top, head and shoulders, triangle, wedge, dan cup and handle.",
+        "placement": "overlay",
+        "fields": [
+            {
+                "name": "lookback",
+                "label": "Lookback Pattern",
+                "default": 220,
+                "min_value": 80,
+            },
+            {
+                "name": "pivot_window",
+                "label": "Sensitivitas Pivot",
+                "default": 3,
+                "min_value": 2,
+            },
+            {
+                "name": "tolerance_pct",
+                "label": "Toleransi Harga (%)",
+                "default": 3,
+                "min_value": 1,
+            },
+        ],
+        "color_fields": [
+            {"name": "bullish", "label": "Pattern Bullish", "default": "#22c55e"},
+            {"name": "bearish", "label": "Pattern Bearish", "default": "#ef4444"},
+            {"name": "neutral", "label": "Pattern Netral", "default": "#38bdf8"},
+            {"name": "line", "label": "Garis Pattern", "default": "#f8fafc"},
         ],
     },
     {
@@ -585,8 +649,12 @@ def _normalize_ordered_values(values: list[int]) -> list[int]:
     return result
 
 
-def default_indicator_params(indicator_key: str) -> dict[str, int]:
+def default_indicator_params(indicator_key: str) -> dict[str, Any]:
     """Return a clean default parameter dictionary for one indicator type."""
+    if indicator_key == "CANDLE_PATTERN":
+        return get_default_candle_pattern_params()
+    if indicator_key == "CHART_PATTERN":
+        return get_default_chart_pattern_params()
     indicator = INDICATOR_CATALOG_BY_KEY[indicator_key]
     return {field["name"]: int(field["default"]) for field in indicator["fields"]}
 
@@ -603,8 +671,13 @@ def default_indicator_colors(indicator_key: str) -> dict[str, str]:
 def normalize_indicator_params(
     indicator_key: str,
     raw_params: dict[str, Any] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Normalize indicator params so the chart always receives valid numbers."""
+    if indicator_key == "CANDLE_PATTERN":
+        return normalize_candle_pattern_params(raw_params)
+    if indicator_key == "CHART_PATTERN":
+        return normalize_chart_pattern_params(raw_params)
+
     raw_params = raw_params or {}
     indicator = INDICATOR_CATALOG_BY_KEY[indicator_key]
     normalized_params = {}
@@ -695,36 +768,12 @@ def indicator_supports_edit(indicator_key: str) -> bool:
     return bool(indicator["fields"] or indicator.get("color_fields"))
 
 
-def indicator_param_widget_key(indicator_id: str, field_name: str) -> str:
-    """Build the widget key for one indicator parameter input."""
-    return f"indicator_edit_{indicator_id}_{field_name}"
-
-
-def indicator_color_widget_key(indicator_id: str, field_name: str) -> str:
-    """Build the widget key for one indicator color input."""
-    return f"indicator_color_{indicator_id}_{field_name}"
-
-
-def clear_indicator_editor_draft(indicator_id: str) -> None:
-    """Clear draft widgets for one indicator editor."""
-    indicator = find_indicator(indicator_id)
-    if indicator is None:
-        return
-
-    indicator_definition = INDICATOR_CATALOG_BY_KEY[indicator["key"]]
-    for field in indicator_definition["fields"]:
-        st.session_state.pop(indicator_param_widget_key(indicator_id, field["name"]), None)
-    for color_field in indicator_definition.get("color_fields", []):
-        st.session_state.pop(indicator_color_widget_key(indicator_id, color_field["name"]), None)
-
-
-def select_indicator_color(widget_key: str, color_value: str) -> None:
-    """Store a preset color selection for the current indicator editor."""
-    st.session_state[widget_key] = color_value.lower()
-
-
 def format_indicator_instance_label(indicator: dict[str, Any]) -> str:
     """Build the compact indicator name shown in the active-indicator controls."""
+    custom_display_label = str(indicator.get("display_label") or "").strip()
+    if custom_display_label:
+        return custom_display_label
+
     indicator_key = indicator["key"]
     params = normalize_indicator_params(indicator_key, indicator.get("params"))
 
@@ -756,6 +805,13 @@ def format_indicator_instance_label(indicator: dict[str, Any]) -> str:
         return "VWAP"
     if indicator_key == "PARABOLIC_SAR":
         return "Parabolic SAR"
+    if indicator_key == "CANDLE_PATTERN":
+        return "Candle Pattern"
+    if indicator_key == "CHART_PATTERN":
+        return (
+            f"Chart Pattern {params['lookback']} / "
+            f"{params['pivot_window']} / {params['tolerance_pct']}%"
+        )
     if indicator_key == "TRENDLINE":
         return f"Minor Trend {params['lookback']} / {params['swing_window']}"
     if indicator_key == "MAJOR_TRENDLINE":
@@ -793,5 +849,6 @@ def format_indicator_instance_label(indicator: dict[str, Any]) -> str:
     if indicator_key == "PIVOT_POINT_STANDARD":
         return "Pivot Point Standard"
     return indicator_key
+
 
 

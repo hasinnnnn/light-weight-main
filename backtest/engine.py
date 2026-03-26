@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import math
 from dataclasses import dataclass
@@ -15,8 +15,11 @@ from backtest.config import (
 from backtest.metrics import build_trade_log, calculate_backtest_metrics
 from backtest.models import BacktestResult, Trade
 from strategies.base_strategy import StrategyPreparation
+from strategies.break_ema_strategy import prepare_break_ema_strategy
 from strategies.macd_strategy import prepare_macd_strategy
+from strategies.parabolic_sar_strategy import prepare_parabolic_sar_strategy
 from strategies.rsi_strategy import prepare_rsi_strategy
+from strategies.volume_breakout_strategy import prepare_volume_breakout_strategy
 
 
 class BacktestError(Exception):
@@ -37,6 +40,9 @@ class _OpenPosition:
 PREPARERS = {
     "RSI": prepare_rsi_strategy,
     "MACD": prepare_macd_strategy,
+    "BREAK_EMA": prepare_break_ema_strategy,
+    "PARABOLIC_SAR": prepare_parabolic_sar_strategy,
+    "VOLUME_BREAKOUT": prepare_volume_breakout_strategy,
 }
 
 
@@ -186,7 +192,7 @@ def _prepare_strategy_frame(
     strategy_params: dict[str, Any],
 ) -> StrategyPreparation:
     """Prepare indicator columns and signals for one strategy."""
-    normalized_key = str(strategy_key or "").strip().upper()
+    normalized_key = str(strategy_key or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     try:
         preparer = PREPARERS[normalized_key]
     except KeyError as exc:
@@ -205,9 +211,9 @@ def run_backtest(
     use_lot_sizing: bool = False,
 ) -> BacktestResult:
     """Run one long-only backtest without look-ahead bias."""
-    normalized_key = str(strategy_key or "").strip().upper()
+    normalized_key = str(strategy_key or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     if not normalized_key:
-        raise BacktestError("Pilih strategi backtest dulu sebelum klik Jalankan Backtest.")
+        raise BacktestError("Pilih strategi backtest dulu sebelum menjalankan backtest.")
 
     normalized_general_params = normalize_general_backtest_params(general_params)
     normalized_strategy_params = normalize_strategy_backtest_params(
@@ -378,3 +384,9 @@ def run_backtest(
         initial_capital=initial_capital,
         final_equity=float(equity_curve["equity"].iloc[-1]),
     )
+
+
+
+
+
+

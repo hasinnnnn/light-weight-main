@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import streamlit as st
 
@@ -79,7 +79,7 @@ def render_top_toolbar(result: DataLoadResult | None) -> None:
         )
 
     with indicator_col:
-        indicator_count = len(build_effective_indicator_configs())
+        indicator_count = len([indicator for indicator in build_effective_indicator_configs() if str(indicator.get("source") or "").strip().lower() != "backtest_helper"])
         indicator_label = f"Indikator ({indicator_count})" if indicator_count else "Indikator"
         if st.button(indicator_label, use_container_width=True):
             close_indicator_editor()
@@ -98,5 +98,6 @@ def render_top_toolbar(result: DataLoadResult | None) -> None:
                 mime="text/plain",
                 use_container_width=True,
             )
+
 
 

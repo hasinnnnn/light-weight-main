@@ -48,6 +48,23 @@ PARAMETER_LABELS = {
     "macd_fast_period": "Periode cepat MACD",
     "macd_slow_period": "Periode lambat MACD",
     "macd_signal_period": "Periode signal MACD",
+    "ema_period": "Periode EMA",
+    "psar_acceleration_pct": "Akselerasi PSAR",
+    "psar_max_acceleration_pct": "Maks. akselerasi PSAR",
+    "ema_fast_period": "EMA cepat",
+    "ema_medium_period": "EMA sedang",
+    "ema_slow_period": "EMA lambat",
+    "ema_anchor_period": "EMA anchor",
+    "ma_trend_period": "MA tren",
+    "trendline_lookback": "Lookback trendline",
+    "trendline_swing_window": "Sensitivitas trendline",
+    "max_consolidation_range_pct": "Rentang konsolidasi maks.",
+    "consolidation_bars": "Bar konsolidasi",
+    "volume_ma_period": "Periode MA volume",
+    "consolidation_volume_ratio_max": "Volume konsolidasi maks.",
+    "breakout_volume_ratio_min": "Volume breakout min.",
+    "breakout_buffer_pct": "Buffer breakout",
+    "exit_after_bars": "Exit setelah bar",
 }
 
 PARAMETER_VALUE_LABELS = {
@@ -57,6 +74,8 @@ PARAMETER_VALUE_LABELS = {
     "rsi_above_level": "RSI di atas level exit",
     "cross_down_overbought": "Cross turun dari area overbought",
     "fixed_tp_sl": "Hanya stop loss dan take profit",
+    "ema_breakdown": "Close breakdown di bawah EMA",
+    "tp_sl_trailing_only": "Stop loss / take profit / trailing saja",
     "macd_cross_up_signal": "MACD cross naik di atas signal",
     "macd_cross_up_zero": "MACD cross naik di atas nol",
     "histogram_turn_positive": "Histogram berubah positif",
@@ -218,6 +237,9 @@ def _parameter_value(name: str, value: object, parameters: dict[str, object]) ->
             return _format_pct(float(value))
         return _format_rupiah(float(value))
 
+    if name in {"consolidation_volume_ratio_max", "breakout_volume_ratio_min"}:
+        return f"{float(value):.2f}x"
+
     if name.endswith("_pct"):
         return _format_pct(float(value))
 
@@ -368,6 +390,125 @@ def _render_trade_log_table(result: BacktestResult) -> None:
 
 
 
+
+def _format_price_level(value: float) -> str:
+    """Format one market price without forcing the Rp prefix."""
+    numeric_value = float(value)
+    absolute_value = abs(numeric_value)
+    if absolute_value >= 100 and abs(numeric_value - round(numeric_value)) < 1e-9:
+        formatted = f"{numeric_value:,.0f}"
+    elif absolute_value >= 1:
+        formatted = f"{numeric_value:,.2f}"
+    else:
+        formatted = f"{numeric_value:,.4f}"
+    return formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _count_trailing_psar_bars(result: BacktestResult, position_label: str) -> int:
+    """Count how many latest bars keep the same PSAR side."""
+    if result.chart_frame.empty or "psar_position" not in result.chart_frame:
+        return 0
+    positions = [str(value) for value in result.chart_frame["psar_position"].fillna("").tolist()]
+    count = 0
+    for value in reversed(positions):
+        if value == position_label:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _build_parabolic_sar_setup_status(
+    result: BacktestResult,
+) -> tuple[list[tuple[str, str, str]], str]:
+    """Build strategy-specific setup cards for the Parabolic SAR backtest."""
+    if result.chart_frame.empty:
+        return [], ""
+
+    required_columns = {
+        "close",
+        "trend_ma",
+        "trend_alignment",
+        "psar_position",
+        "psar_flip_up",
+        "entry_signal",
+    }
+    if not required_columns.issubset(set(result.chart_frame.columns)):
+        return [], ""
+
+    latest = result.chart_frame.iloc[-1]
+    ma_period = 200
+
+    close_price = float(pd.to_numeric(pd.Series([latest["close"]]), errors="coerce").iloc[0])
+    trend_ma = float(pd.to_numeric(pd.Series([latest["trend_ma"]]), errors="coerce").iloc[0])
+    trend_is_up = bool(latest.get("trend_alignment", False))
+    price_above_trend_ma = close_price >= trend_ma if pd.notna(trend_ma) else False
+    psar_position = str(latest.get("psar_position") or "")
+    psar_flip_up = bool(latest.get("psar_flip_up", False))
+    entry_signal = bool(latest.get("entry_signal", False))
+    psar_below_price = psar_position == "below"
+    psar_bars = _count_trailing_psar_bars(result, psar_position)
+
+    trend_text = (
+        f"Uptrend di atas MA {ma_period}"
+        if trend_is_up
+        else f"Belum uptrend di atas MA {ma_period}"
+    )
+    trend_tone = "positive" if trend_is_up else "negative"
+
+    if pd.notna(trend_ma):
+        price_text = (
+            f"Close {_format_price_level(close_price)} di atas MA {ma_period} ({_format_price_level(trend_ma)})"
+            if price_above_trend_ma
+            else f"Close {_format_price_level(close_price)} di bawah MA {ma_period} ({_format_price_level(trend_ma)})"
+        )
+        price_tone = "positive" if price_above_trend_ma else "negative"
+    else:
+        price_text = f"MA {ma_period} belum siap"
+        price_tone = "neutral"
+
+    if psar_flip_up and psar_below_price:
+        psar_text = "Titik pertama PSAR baru pindah ke bawah harga"
+        psar_tone = "positive"
+    elif psar_below_price:
+        psar_text = f"PSAR masih di bawah harga ({psar_bars} bar)"
+        psar_tone = "neutral"
+    elif psar_position == "above":
+        psar_text = f"PSAR masih di atas harga ({psar_bars} bar)"
+        psar_tone = "negative"
+    else:
+        psar_text = "PSAR belum siap"
+        psar_tone = "neutral"
+
+    if entry_signal:
+        entry_text = "Cocok untuk entry berikutnya"
+        entry_tone = "positive"
+        guidance_text = (
+            "Sinyal titik pertama PSAR di bawah harga baru muncul dan close juga masih bertahan di atas MA 200."
+        )
+    elif trend_is_up and psar_below_price and price_above_trend_ma:
+        entry_text = "Masih bullish, tapi sinyal pertama sudah lewat"
+        entry_tone = "neutral"
+        guidance_text = (
+            "Trend masih sehat di atas MA 200, tapi entry idealnya saat titik pertama PSAR baru pindah ke bawah harga."
+        )
+    elif not trend_is_up:
+        entry_text = "Belum cocok, harga belum di atas MA 200"
+        entry_tone = "negative"
+        guidance_text = "Tunggu harga kembali bertahan di atas MA 200 supaya filter tren PSAR kembali valid."
+    else:
+        entry_text = "Belum cocok, tunggu flip PSAR berikutnya"
+        entry_tone = "negative"
+        guidance_text = "Tunggu reversal PSAR berikutnya yang kembali muncul di bawah harga saat saham masih di atas MA 200."
+
+    cards = [
+        ("Status trend", trend_text, trend_tone),
+        ("Posisi harga", price_text, price_tone),
+        ("Status PSAR", psar_text, psar_tone),
+        ("Kelayakan entry", entry_text, entry_tone),
+    ]
+    return cards, guidance_text
+
 def render_backtest_result_card(result: BacktestResult) -> None:
     """Render the translated backtest summary and trade log without extra charts."""
     entry_lot = _resolve_entry_lot(result)
@@ -477,6 +618,15 @@ def render_backtest_result_card(result: BacktestResult) -> None:
         st.info("Belum ada transaksi yang terbentuk pada periode ini.")
     else:
         _render_trade_log_table(result)
+
+
+
+
+
+
+
+
+
 
 
 

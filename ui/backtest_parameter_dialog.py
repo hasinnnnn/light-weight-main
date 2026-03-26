@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
 import streamlit as st
 
 from backtest.config import (
+    BREAK_EMA_EXIT_MODES,
     MACD_ENTRY_MODES,
     MACD_EXIT_MODES,
     POSITION_SIZING_MODES,
@@ -28,6 +29,8 @@ OPTION_LABELS = {
     "rsi_above_level": "RSI di atas level exit",
     "cross_down_overbought": "Cross turun dari area overbought",
     "fixed_tp_sl": "Hanya stop loss dan take profit",
+    "ema_breakdown": "Close breakdown di bawah EMA",
+    "tp_sl_trailing_only": "Stop loss / take profit / trailing saja",
     "macd_cross_up_signal": "MACD cross naik di atas signal",
     "macd_cross_up_zero": "MACD cross naik di atas garis nol",
     "histogram_turn_positive": "Histogram berubah positif",
@@ -52,7 +55,7 @@ def clear_backtest_parameter_draft() -> None:
     for field_name in general_defaults:
         st.session_state.pop(_draft_key(GENERAL_DRAFT_PREFIX, field_name), None)
 
-    for strategy_key in ["RSI", "MACD"]:
+    for strategy_key in ["RSI", "MACD", "BREAK_EMA", "PARABOLIC_SAR", "VOLUME_BREAKOUT"]:
         for field_name in get_default_strategy_params(strategy_key):
             st.session_state.pop(_draft_key(STRATEGY_DRAFT_PREFIX, field_name), None)
 
@@ -385,10 +388,168 @@ def _render_macd_inputs() -> dict[str, Any]:
     return values
 
 
+def _render_break_ema_inputs() -> dict[str, Any]:
+    """Render the Break EMA strategy-specific fields."""
+    values: dict[str, Any] = {}
+    st.markdown("**Parameter Break EMA**")
+    ema_col, exit_col = st.columns(2)
+    with ema_col:
+        values["ema_period"] = int(
+            st.number_input(
+                "Periode EMA",
+                min_value=1,
+                value=int(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "ema_period")]),
+                step=1,
+                format="%d",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "ema_period"),
+            )
+        )
+    with exit_col:
+        values["exit_mode"] = st.selectbox(
+            "Mode Exit",
+            BREAK_EMA_EXIT_MODES,
+            index=BREAK_EMA_EXIT_MODES.index(
+                str(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "exit_mode")])
+            ),
+            format_func=_option_label,
+            key=_draft_key(STRATEGY_DRAFT_PREFIX, "exit_mode"),
+        )
+
+    st.caption(
+        "Trailing stop mengikuti parameter umum backtest. "
+        "Kalau mode exit diganti ke TP/SL/Trailing saja, strategi tidak akan keluar karena breakdown EMA."
+    )
+    return values
+
+
+def _render_parabolic_sar_inputs() -> dict[str, Any]:
+    """Render the Parabolic SAR strategy-specific fields."""
+    values: dict[str, Any] = {}
+    st.markdown("**Parameter Parabolic SAR**")
+    accel_col, max_accel_col = st.columns(2)
+    with accel_col:
+        values["psar_acceleration_pct"] = float(
+            st.number_input(
+                "Akselerasi PSAR (%)",
+                min_value=0.1,
+                value=float(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "psar_acceleration_pct")]),
+                step=0.1,
+                format="%.2f",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "psar_acceleration_pct"),
+            )
+        )
+    with max_accel_col:
+        values["psar_max_acceleration_pct"] = float(
+            st.number_input(
+                "Maks. akselerasi PSAR (%)",
+                min_value=0.1,
+                value=float(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "psar_max_acceleration_pct")]),
+                step=0.1,
+                format="%.2f",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "psar_max_acceleration_pct"),
+            )
+        )
+
+    st.caption(
+        "Filter trend untuk strategi ini sekarang dibuat lebih bersih: hanya pakai MA 200 di chart utama. "
+        "Trendline otomatis dan paket EMA berlapis sudah dihapus dari preview backtest."
+    )
+    return values
+
+
+def _render_volume_breakout_inputs() -> dict[str, Any]:
+    """Render the Volume Breakout strategy-specific fields."""
+    values: dict[str, Any] = {}
+    st.markdown("**Parameter Volume Breakout**")
+    bars_col, range_col = st.columns(2)
+    with bars_col:
+        values["consolidation_bars"] = int(
+            st.number_input(
+                "Bar konsolidasi",
+                min_value=3,
+                value=int(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "consolidation_bars")]),
+                step=1,
+                format="%d",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "consolidation_bars"),
+            )
+        )
+    with range_col:
+        values["max_consolidation_range_pct"] = float(
+            st.number_input(
+                "Rentang konsolidasi maks. (%)",
+                min_value=0.1,
+                value=float(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "max_consolidation_range_pct")]),
+                step=0.1,
+                format="%.2f",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "max_consolidation_range_pct"),
+            )
+        )
+
+    volume_col, ratio_col = st.columns(2)
+    with volume_col:
+        values["volume_ma_period"] = int(
+            st.number_input(
+                "Periode MA volume",
+                min_value=3,
+                value=int(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "volume_ma_period")]),
+                step=1,
+                format="%d",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "volume_ma_period"),
+            )
+        )
+    with ratio_col:
+        values["consolidation_volume_ratio_max"] = float(
+            st.number_input(
+                "Volume konsolidasi maks. (x)",
+                min_value=0.1,
+                value=float(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "consolidation_volume_ratio_max")]),
+                step=0.05,
+                format="%.2f",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "consolidation_volume_ratio_max"),
+            )
+        )
+
+    breakout_col, buffer_col, exit_col = st.columns(3)
+    with breakout_col:
+        values["breakout_volume_ratio_min"] = float(
+            st.number_input(
+                "Volume breakout min. (x)",
+                min_value=1.0,
+                value=float(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "breakout_volume_ratio_min")]),
+                step=0.05,
+                format="%.2f",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "breakout_volume_ratio_min"),
+            )
+        )
+    with buffer_col:
+        values["breakout_buffer_pct"] = float(
+            st.number_input(
+                "Buffer breakout (%)",
+                min_value=0.0,
+                value=float(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "breakout_buffer_pct")]),
+                step=0.05,
+                format="%.2f",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "breakout_buffer_pct"),
+            )
+        )
+    with exit_col:
+        values["exit_after_bars"] = int(
+            st.number_input(
+                "Exit setelah bar",
+                min_value=1,
+                value=int(st.session_state[_draft_key(STRATEGY_DRAFT_PREFIX, "exit_after_bars")]),
+                step=1,
+                format="%d",
+                key=_draft_key(STRATEGY_DRAFT_PREFIX, "exit_after_bars"),
+            )
+        )
+    return values
+
+
 def render_backtest_parameter_dialog() -> None:
     """Render the backtest parameter editor inside the existing indicator modal."""
-    strategy_key = str(st.session_state.selected_backtest_strategy or "").strip().upper()
-    if strategy_key not in {"RSI", "MACD"}:
+    strategy_key = str(st.session_state.selected_backtest_strategy or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
+    if strategy_key not in {"RSI", "MACD", "BREAK_EMA", "PARABOLIC_SAR", "VOLUME_BREAKOUT"}:
         st.markdown("**Parameter Backtest**")
         st.info("Pilih strategi backtest dulu sebelum membuka parameter.")
         if st.button("Tutup", use_container_width=True):
@@ -398,7 +559,14 @@ def render_backtest_parameter_dialog() -> None:
         return
 
     general_params = normalize_general_backtest_params(st.session_state.backtest_params_general)
-    strategy_state_key = "backtest_params_rsi" if strategy_key == "RSI" else "backtest_params_macd"
+    strategy_state_key_lookup = {
+        "RSI": "backtest_params_rsi",
+        "MACD": "backtest_params_macd",
+        "BREAK_EMA": "backtest_params_break_ema",
+        "PARABOLIC_SAR": "backtest_params_parabolic_sar",
+        "VOLUME_BREAKOUT": "backtest_params_volume_breakout",
+    }
+    strategy_state_key = strategy_state_key_lookup[strategy_key]
     strategy_params = normalize_strategy_backtest_params(
         strategy_key,
         st.session_state[strategy_state_key],
@@ -411,7 +579,16 @@ def render_backtest_parameter_dialog() -> None:
 
     general_values = _render_general_parameter_inputs()
     st.divider()
-    strategy_values = _render_rsi_inputs() if strategy_key == "RSI" else _render_macd_inputs()
+    if strategy_key == "RSI":
+        strategy_values = _render_rsi_inputs()
+    elif strategy_key == "MACD":
+        strategy_values = _render_macd_inputs()
+    elif strategy_key == "BREAK_EMA":
+        strategy_values = _render_break_ema_inputs()
+    elif strategy_key == "PARABOLIC_SAR":
+        strategy_values = _render_parabolic_sar_inputs()
+    else:
+        strategy_values = _render_volume_breakout_inputs()
 
     cancel_col, save_col = st.columns(2)
     cancel_clicked = cancel_col.button("Batal", use_container_width=True)
@@ -436,4 +613,13 @@ def render_backtest_parameter_dialog() -> None:
         clear_backtest_parameter_draft()
         st.session_state.backtest_parameter_modal_open = False
         st.rerun()
+
+
+
+
+
+
+
+
+
 

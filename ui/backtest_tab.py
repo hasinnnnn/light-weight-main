@@ -8,7 +8,7 @@ from backtest.config import (
     get_strategy_label,
 )
 
-VALID_BACKTEST_STRATEGIES = {"RSI", "MACD"}
+VALID_BACKTEST_STRATEGIES = {"RSI", "MACD", "BREAK_EMA", "PARABOLIC_SAR", "VOLUME_BREAKOUT"}
 
 
 def render_backtest_tab(has_loaded_data: bool) -> dict[str, bool]:
@@ -19,7 +19,7 @@ def render_backtest_tab(has_loaded_data: bool) -> dict[str, bool]:
         "stop_backtest": False,
     }
 
-    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper()
+    selected_strategy = str(st.session_state.selected_backtest_strategy or "").strip().upper().replace("PARABOLLIC_SAR", "PARABOLIC_SAR")
     has_selected_strategy = selected_strategy in VALID_BACKTEST_STRATEGIES
     selected_strategy_label = (
         get_strategy_label(selected_strategy)
@@ -111,3 +111,7 @@ def render_backtest_tab(has_loaded_data: bool) -> dict[str, bool]:
         st.caption("Load chart dulu supaya hasil backtest bisa tampil setelah strategi dipilih.")
 
     return actions
+
+
+
+

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html
 from typing import Any
@@ -24,6 +24,8 @@ from state.app_state import (
     update_indicator_settings,
 )
 from charts.chart_service import describe_nearest_support_resistance, describe_strong_support_resistance
+from indicators.candle_patterns import ALL_CANDLE_PATTERN_KEYS, CANDLE_PATTERN_DEFINITIONS
+from indicators.chart_patterns import ALL_CHART_PATTERN_KEYS, CHART_PATTERN_DEFINITIONS
 from indicators.catalog import (
     COLOR_PRESET_GRID,
     INDICATOR_CATALOG,
@@ -344,6 +346,34 @@ def render_strong_support_resistance_info(
         )
 
 
+def render_pattern_toggle_section(
+    indicator_id: str,
+    pattern_keys: list[str],
+    pattern_definitions: dict[str, dict[str, str]],
+    normalized_params: dict[str, Any],
+) -> dict[str, bool]:
+    """Render per-pattern checkboxes for pattern-based indicators."""
+    toggle_values: dict[str, bool] = {}
+    columns = st.columns(2, gap="small")
+
+    for index, pattern_key in enumerate(pattern_keys):
+        pattern_meta = pattern_definitions[pattern_key]
+        param_key = f"show_{pattern_key}"
+        widget_key = indicator_param_widget_key(indicator_id, param_key)
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = bool(normalized_params.get(param_key, True))
+
+        with columns[index % 2]:
+            toggle_values[param_key] = bool(
+                st.checkbox(
+                    str(pattern_meta["label"]),
+                    key=widget_key,
+                    help=str(pattern_meta["description"]),
+                )
+            )
+
+    return toggle_values
+
 def render_indicator_editor_view(indicator_id: str) -> None:
     """Show the edit form inside the indicator modal."""
     indicator = find_indicator(indicator_id)
@@ -364,7 +394,7 @@ def render_indicator_editor_view(indicator_id: str) -> None:
     else:
         st.caption("Indikator ini tidak punya parameter yang perlu diubah.")
 
-    input_values: dict[str, int] = {}
+    input_values: dict[str, Any] = {}
     for field in indicator_definition["fields"]:
         widget_key = indicator_param_widget_key(indicator_id, field["name"])
         if widget_key not in st.session_state:
@@ -377,6 +407,29 @@ def render_indicator_editor_view(indicator_id: str) -> None:
                 value=int(st.session_state[widget_key]),
                 format="%d",
                 key=widget_key,
+            )
+        )
+
+    if indicator["key"] == "CANDLE_PATTERN":
+        st.markdown("**Pattern Candle yang Tampil**")
+        st.caption("Pilih pola candle yang ingin diberi label di chart utama.")
+        input_values.update(
+            render_pattern_toggle_section(
+                indicator_id=indicator_id,
+                pattern_keys=ALL_CANDLE_PATTERN_KEYS,
+                pattern_definitions=CANDLE_PATTERN_DEFINITIONS,
+                normalized_params=normalized_params,
+            )
+        )
+    elif indicator["key"] == "CHART_PATTERN":
+        st.markdown("**Pattern Chart yang Tampil**")
+        st.caption("Pilih pola chart yang ingin digambar atau diberi label di chart utama.")
+        input_values.update(
+            render_pattern_toggle_section(
+                indicator_id=indicator_id,
+                pattern_keys=ALL_CHART_PATTERN_KEYS,
+                pattern_definitions=CHART_PATTERN_DEFINITIONS,
+                normalized_params=normalized_params,
             )
         )
 
@@ -422,6 +475,9 @@ def render_indicator_active_tab() -> None:
         return
 
     for indicator in display_indicators:
+        indicator_source = str(indicator.get("source") or "").strip().lower()
+        if indicator_source == "backtest_helper":
+            continue
         if is_backtest_indicator_config(indicator):
             indicator_label = html.escape(f"Backtest - {format_indicator_instance_label(indicator)}")
             if st.session_state.backtest_enabled:
@@ -569,6 +625,8 @@ def render_indicator_list_tab() -> None:
                     add_indicator(indicator["key"])
                     close_indicator_editor()
                     st.rerun()
+
+
 
 
 

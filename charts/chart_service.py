@@ -4,6 +4,11 @@ from typing import Any
 
 import pandas as pd
 
+from indicators.candle_patterns import detect_candle_patterns
+from indicators.chart_patterns import detect_chart_patterns
+from indicators.parabolic_sar import calculate_parabolic_sar
+from strategies.volume_breakout_strategy import summarize_volume_breakout_zone
+
 MAIN_CHART_HEIGHT = 680
 INDICATOR_CHART_HEIGHT = 240
 VOLUME_PANEL_TOP_MARGIN = 0.78
@@ -21,6 +26,9 @@ OVERLAY_INDICATOR_KEYS = {
     "BOLLINGER_BANDS",
     "VWAP",
     "PARABOLIC_SAR",
+    "CANDLE_PATTERN",
+    "CHART_PATTERN",
+    "VOLUME_BREAKOUT_ZONE",
     "TRENDLINE",
     "MAJOR_TRENDLINE",
     "NEAREST_SUPPORT_RESISTANCE",
@@ -38,6 +46,20 @@ BOLLINGER_COLORS = {
 }
 VWAP_COLOR = "#fbbf24"
 PARABOLIC_SAR_COLOR = "#38bdf8"
+CANDLE_PATTERN_COLORS = {
+    "bullish": "#22c55e",
+    "bearish": "#ef4444",
+    "neutral": "#f8fafc",
+}
+CHART_PATTERN_COLORS = {
+    "bullish": "#22c55e",
+    "bearish": "#ef4444",
+    "neutral": "#38bdf8",
+    "line": "#f8fafc",
+}
+VOLUME_BREAKOUT_ZONE_COLOR = "#38bdf8"
+VOLUME_BREAKOUT_BREAKOUT_COLOR = "#22c55e"
+VOLUME_BREAKOUT_FILL_ALPHA = 0.16
 ATR_COLOR = "#f59e0b"
 PRICE_OSCILLATOR_COLOR = "#38bdf8"
 TRENDLINE_COLORS = {
@@ -500,79 +522,21 @@ def _build_parabolic_sar_dataframe(
     max_acceleration: float = 0.2,
 ) -> pd.DataFrame:
     """Prepare Parabolic SAR values from high/low price action."""
-    indicator_frame = _build_high_low_close_volume_source(data)[["time", "high", "low", "close"]].copy()
-    if len(indicator_frame) < 2:
+    indicator_frame = calculate_parabolic_sar(
+        _build_high_low_close_volume_source(data)[["time", "high", "low", "close"]].copy(),
+        acceleration=acceleration,
+        max_acceleration=max_acceleration,
+    )
+    if indicator_frame.empty:
         return indicator_frame.iloc[0:0]
 
-    high_series = pd.to_numeric(indicator_frame["high"], errors="coerce").reset_index(drop=True)
-    low_series = pd.to_numeric(indicator_frame["low"], errors="coerce").reset_index(drop=True)
-    close_series = pd.to_numeric(indicator_frame["close"], errors="coerce").reset_index(drop=True)
-
-    is_uptrend = bool(close_series.iloc[1] >= close_series.iloc[0])
-    extreme_point = float(high_series.iloc[0] if is_uptrend else low_series.iloc[0])
-    acceleration_factor = float(acceleration)
-    sar_values = [float(low_series.iloc[0] if is_uptrend else high_series.iloc[0])]
-    positions = ["below" if is_uptrend else "above"]
-
-    for index in range(1, len(indicator_frame)):
-        previous_sar = sar_values[-1]
-        current_sar = previous_sar + (acceleration_factor * (extreme_point - previous_sar))
-
-        if is_uptrend:
-            if index >= 2:
-                current_sar = min(
-                    current_sar,
-                    float(low_series.iloc[index - 1]),
-                    float(low_series.iloc[index - 2]),
-                )
-            else:
-                current_sar = min(current_sar, float(low_series.iloc[index - 1]))
-
-            if float(low_series.iloc[index]) < current_sar:
-                is_uptrend = False
-                current_sar = extreme_point
-                extreme_point = float(low_series.iloc[index])
-                acceleration_factor = float(acceleration)
-            else:
-                if float(high_series.iloc[index]) > extreme_point:
-                    extreme_point = float(high_series.iloc[index])
-                    acceleration_factor = min(
-                        acceleration_factor + float(acceleration),
-                        float(max_acceleration),
-                    )
-        else:
-            if index >= 2:
-                current_sar = max(
-                    current_sar,
-                    float(high_series.iloc[index - 1]),
-                    float(high_series.iloc[index - 2]),
-                )
-            else:
-                current_sar = max(current_sar, float(high_series.iloc[index - 1]))
-
-            if float(high_series.iloc[index]) > current_sar:
-                is_uptrend = True
-                current_sar = extreme_point
-                extreme_point = float(high_series.iloc[index])
-                acceleration_factor = float(acceleration)
-            else:
-                if float(low_series.iloc[index]) < extreme_point:
-                    extreme_point = float(low_series.iloc[index])
-                    acceleration_factor = min(
-                        acceleration_factor + float(acceleration),
-                        float(max_acceleration),
-                    )
-
-        sar_values.append(float(current_sar))
-        positions.append("below" if is_uptrend else "above")
-
-    candle_range = (high_series - low_series).abs()
+    candle_range = (indicator_frame["high"] - indicator_frame["low"]).abs()
     median_candle_range = float(candle_range.dropna().median()) if not candle_range.dropna().empty else 0.0
-    latest_close = float(close_series.iloc[-1]) if not close_series.empty else 0.0
+    latest_close = float(pd.to_numeric(indicator_frame["close"], errors="coerce").iloc[-1])
     display_offset = max(median_candle_range * 0.22, abs(latest_close) * 0.0012, 0.01)
 
-    psar_series = pd.Series(sar_values, index=indicator_frame.index, dtype="float64")
-    position_series = pd.Series(positions, index=indicator_frame.index, dtype="object")
+    psar_series = pd.to_numeric(indicator_frame["psar"], errors="coerce")
+    position_series = indicator_frame["position"].astype("object")
     psar_series.loc[position_series.eq("above")] = (
         psar_series.loc[position_series.eq("above")] + display_offset
     )
@@ -581,7 +545,6 @@ def _build_parabolic_sar_dataframe(
     )
 
     indicator_frame["Parabolic SAR"] = psar_series
-    indicator_frame["position"] = positions
     indicator_frame = indicator_frame.dropna(subset=["Parabolic SAR"])
     return indicator_frame[["time", "Parabolic SAR", "position"]]
 
@@ -1979,7 +1942,14 @@ def _render_vwap(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> N
 def _render_parabolic_sar(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
     """Render Parabolic SAR on the main chart."""
     colors = _indicator_colors(indicator)
-    psar_frame = _build_parabolic_sar_dataframe(data)
+    params = _indicator_params(indicator)
+    acceleration_pct = max(params.get("acceleration_pct", 2), 1) / 100.0
+    max_acceleration_pct = max(params.get("max_acceleration_pct", 20), int(round(acceleration_pct * 100))) / 100.0
+    psar_frame = _build_parabolic_sar_dataframe(
+        data,
+        acceleration=acceleration_pct,
+        max_acceleration=max_acceleration_pct,
+    )
     if psar_frame.empty:
         return
 
@@ -1988,7 +1958,7 @@ def _render_parabolic_sar(chart: Any, data: pd.DataFrame, indicator: dict[str, A
     for index, segment_frame in enumerate(psar_segments):
         series_name = "Parabolic SAR" if index == 0 else ""
         sar_line = chart.create_line(
-            name=series_name,
+            name="",
             color=psar_color,
             width=1,
             price_line=False,
@@ -2012,6 +1982,89 @@ def _render_parabolic_sar(chart: Any, data: pd.DataFrame, indicator: dict[str, A
             }})
             """
         )
+
+
+def _render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
+    """Render the latest valid volume-breakout consolidation zone on the main chart."""
+    colors = _indicator_colors(indicator)
+    summary = summarize_volume_breakout_zone(data, indicator.get("params") or {})
+    if summary is None:
+        return
+
+    zone_color = colors.get("zone", VOLUME_BREAKOUT_ZONE_COLOR)
+    breakout_color = colors.get("breakout", VOLUME_BREAKOUT_BREAKOUT_COLOR)
+    border_color = breakout_color if str(summary.get("status") or "") == "breakout" else zone_color
+
+    chart.box(
+        start_time=summary["start_time"],
+        start_value=float(summary["zone_top"]),
+        end_time=summary["end_time"],
+        end_value=float(summary["zone_bottom"]),
+        color=_with_alpha(border_color, 0.42),
+        fill_color=_with_alpha(zone_color, VOLUME_BREAKOUT_FILL_ALPHA),
+        width=1,
+        style="solid",
+    )
+
+    label_points = [
+        {
+            "time": summary["label_time"],
+            "Volume Breakout Zone": float(summary["label_price"]),
+        }
+    ]
+    markers = [
+        {
+            "time": summary["label_time"],
+            "position": "above",
+            "shape": "circle",
+            "color": border_color,
+            "text": "Area Konsolidasi",
+        }
+    ]
+
+    breakout_time = summary.get("breakout_time")
+    breakout_label_price = summary.get("breakout_label_price")
+    breakout_volume_ratio = summary.get("breakout_volume_ratio")
+    if breakout_time is not None and breakout_label_price is not None:
+        breakout_text = "Breakout Volume"
+        if breakout_volume_ratio is not None and pd.notna(breakout_volume_ratio):
+            breakout_text = f"Breakout Vol {float(breakout_volume_ratio):.2f}x"
+        label_points.append(
+            {
+                "time": breakout_time,
+                "Volume Breakout Zone": float(breakout_label_price),
+            }
+        )
+        markers.append(
+            {
+                "time": breakout_time,
+                "position": "above",
+                "shape": "circle",
+                "color": breakout_color,
+                "text": breakout_text,
+            }
+        )
+
+    label_series = chart.create_line(
+        name="",
+        color="rgba(0, 0, 0, 0)",
+        width=1,
+        price_line=False,
+        price_label=False,
+    )
+    label_series.set(pd.DataFrame(label_points))
+    label_series.marker_list(markers)
+    label_series.run_script(
+        f"""
+        {label_series.id}.series.applyOptions({{
+            lineVisible: false,
+            pointMarkersVisible: false,
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false
+        }})
+        """
+    )
 
 
 def _render_auto_trendline(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
@@ -2242,6 +2295,115 @@ def _render_pivot_point_standard(chart: Any, data: pd.DataFrame, indicator: dict
         )
 
 
+def _render_text_marker_series(
+    chart: Any,
+    series_name: str,
+    marker_points: list[dict[str, Any]],
+    markers: list[dict[str, Any]],
+) -> None:
+    """Render one invisible line series that only serves marker labels."""
+    if not marker_points or not markers:
+        return
+
+    marker_series = chart.create_line(
+        name="",
+        color="rgba(0, 0, 0, 0)",
+        width=1,
+        price_line=False,
+        price_label=False,
+    )
+    marker_series.set(pd.DataFrame(marker_points))
+    marker_series.marker_list(markers)
+    marker_series.run_script(
+        f"""
+        {marker_series.id}.series.applyOptions({{
+            lineVisible: false,
+            pointMarkersVisible: false,
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false
+        }})
+        """
+    )
+
+
+
+def _render_candle_patterns(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
+    """Render detected candle-pattern labels directly on the main chart."""
+    colors = _indicator_colors(indicator)
+    events = detect_candle_patterns(data, indicator.get("params") or {})
+    if events.empty:
+        return
+
+    marker_points: list[dict[str, Any]] = []
+    markers: list[dict[str, Any]] = []
+    series_name = "Candle Pattern"
+    for row in events.itertuples(index=False):
+        direction = str(row.direction)
+        marker_points.append({"time": row.time, series_name: float(row.price)})
+        markers.append(
+            {
+                "time": row.time,
+                "position": str(row.position),
+                "shape": "circle",
+                "color": colors.get(direction, CANDLE_PATTERN_COLORS.get(direction, "#f8fafc")),
+                "text": str(row.short_label),
+            }
+        )
+
+    _render_text_marker_series(chart, series_name, marker_points, markers)
+
+
+
+def _render_chart_patterns(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
+    """Render detected chart patterns as guide lines and compact labels."""
+    colors = _indicator_colors(indicator)
+    patterns = detect_chart_patterns(data, indicator.get("params") or {})
+    if not patterns:
+        return
+
+    marker_points: list[dict[str, Any]] = []
+    markers: list[dict[str, Any]] = []
+    series_name = "Chart Pattern"
+    line_base_color = colors.get("line", CHART_PATTERN_COLORS["line"])
+
+    for pattern in patterns:
+        direction = str(pattern.get("direction") or "neutral")
+        tone_color = colors.get(direction, CHART_PATTERN_COLORS.get(direction, line_base_color))
+        for point_start, point_end in zip(pattern.get("points") or [], (pattern.get("points") or [])[1:]):
+            chart.trend_line(
+                start_time=point_start["time"],
+                start_value=float(point_start["price"]),
+                end_time=point_end["time"],
+                end_value=float(point_end["price"]),
+                line_color=_with_alpha(line_base_color, 0.26),
+                width=1,
+                style="dashed",
+            )
+        for line in pattern.get("lines") or []:
+            chart.trend_line(
+                start_time=line["start_time"],
+                start_value=float(line["start_value"]),
+                end_time=line["end_time"],
+                end_value=float(line["end_value"]),
+                line_color=_with_alpha(tone_color, 0.88),
+                width=2,
+                style="dashed" if direction == "neutral" else "solid",
+            )
+
+        marker_points.append({"time": pattern["label_time"], series_name: float(pattern["label_price"])})
+        markers.append(
+            {
+                "time": pattern["label_time"],
+                "position": "below" if direction == "bullish" else "above",
+                "shape": "circle",
+                "color": tone_color,
+                "text": str(pattern["short_label"]),
+            }
+        )
+
+    _render_text_marker_series(chart, series_name, marker_points, markers)
+
 def _render_overlay_indicator(
     chart: Any,
     data: pd.DataFrame,
@@ -2259,6 +2421,15 @@ def _render_overlay_indicator(
         return
     if indicator_key == "PARABOLIC_SAR":
         _render_parabolic_sar(chart, data, indicator)
+        return
+    if indicator_key == "CANDLE_PATTERN":
+        _render_candle_patterns(chart, data, indicator)
+        return
+    if indicator_key == "CHART_PATTERN":
+        _render_chart_patterns(chart, data, indicator)
+        return
+    if indicator_key == "VOLUME_BREAKOUT_ZONE":
+        _render_volume_breakout_zone(chart, data, indicator)
         return
     if indicator_key == "TRENDLINE":
         _render_auto_trendline(chart, data, indicator)
@@ -2721,6 +2892,15 @@ def render_indicator_charts(
         if _indicator_key(indicator) not in PANEL_INDICATOR_KEYS:
             continue
         _render_single_indicator_chart(indicator, data)
+
+
+
+
+
+
+
+
+
 
 
 

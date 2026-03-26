@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html
 from typing import Any
@@ -12,6 +12,8 @@ from charts.chart_service import (
     describe_strong_support_resistance,
 )
 from data.market_data_service import DataLoadResult
+from indicators.candle_patterns import summarize_candle_patterns
+from indicators.chart_patterns import summarize_chart_patterns
 from indicators.catalog import normalize_indicator_colors, normalize_indicator_params
 
 def format_price_value(value: float) -> str:
@@ -398,14 +400,14 @@ def build_indicator_note_section_html(
     )
 
 
-def render_indicator_explanation_card() -> None:
+def render_indicator_explanation_card(indicator_configs: list[dict[str, Any]] | None = None) -> None:
     """Render a descriptive card below the main chart for active indicators that need context."""
     result = st.session_state.loaded_result
     if result is None:
         return
 
     section_html: list[str] = []
-    active_indicators = st.session_state.active_indicators or []
+    active_indicators = indicator_configs if indicator_configs is not None else (st.session_state.active_indicators or [])
 
     for indicator in active_indicators:
         if not bool(indicator.get("visible", True)):
@@ -413,6 +415,8 @@ def render_indicator_explanation_card() -> None:
 
         indicator_key = str(indicator.get("key") or "").strip().upper()
         if indicator_key not in {
+            "CANDLE_PATTERN",
+            "CHART_PATTERN",
             "TRENDLINE",
             "MAJOR_TRENDLINE",
             "NEAREST_SUPPORT_RESISTANCE",
@@ -423,6 +427,231 @@ def render_indicator_explanation_card() -> None:
         params = normalize_indicator_params(indicator_key, indicator.get("params"))
         colors = normalize_indicator_colors(indicator_key, indicator.get("colors"))
 
+        if indicator_key == "CANDLE_PATTERN":
+            summary = summarize_candle_patterns(result.data, params)
+            bullish_color = colors.get("bullish", "#22c55e")
+            bearish_color = colors.get("bearish", "#ef4444")
+            neutral_color = colors.get("neutral", "#f8fafc")
+            latest_event = summary["events"][-1] if summary["events"] else None
+            latest_bullish = summary["latest_by_direction"].get("bullish")
+            latest_bearish = summary["latest_by_direction"].get("bearish")
+            latest_neutral = summary["latest_by_direction"].get("neutral")
+            if latest_event is None:
+                section_html.append(
+                    build_indicator_note_section_html(
+                        title="Candle Pattern",
+                        summary_text="Belum ada pola candle yang cocok di range chart aktif.",
+                        context_text=f"Lookback {int(params['lookback'])} candle. Centang pola tertentu di editor untuk menyembunyikan label yang tidak ingin kamu lihat.",
+                        boxes_html=[
+                            build_indicator_note_info_box_html(
+                                label="Pattern Terbaru",
+                                value=None,
+                                color=neutral_color,
+                                empty_message="Belum ada pattern candle yang cocok di range ini.",
+                            ),
+                            build_indicator_note_info_box_html(
+                                label="Bullish Terbaru",
+                                value=None,
+                                color=bullish_color,
+                                empty_message="Belum ada pattern bullish.",
+                            ),
+                            build_indicator_note_info_box_html(
+                                label="Bearish Terbaru",
+                                value=None,
+                                color=bearish_color,
+                                empty_message="Belum ada pattern bearish.",
+                            ),
+                        ],
+                    )
+                )
+                continue
+
+            section_html.append(
+                build_indicator_note_section_html(
+                    title="Candle Pattern",
+                    summary_text=(
+                        f"Pattern candle terbaru adalah {latest_event['label']} pada {latest_event['date_label']}. "
+                        f"Total pola yang terdeteksi di range ini: {int(summary['total_events'])}."
+                    ),
+                    context_text=f"Lookback {int(params['lookback'])} candle. Label singkat seperti BE, BU, dan DJ tampil langsung di chart utama.",
+                    boxes_html=[
+                        build_indicator_note_info_box_html(
+                            label="Pattern Terbaru",
+                            value=str(latest_event["label"]),
+                            color=(
+                                bullish_color if latest_event["direction"] == "bullish"
+                                else bearish_color if latest_event["direction"] == "bearish"
+                                else neutral_color
+                            ),
+                            detail_lines=[
+                                f"Tanggal {latest_event['date_label']}",
+                                str(latest_event["description"]),
+                            ],
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Bullish Terbaru",
+                            value=(str(latest_bullish["label"]) if latest_bullish else None),
+                            color=bullish_color,
+                            detail_lines=(
+                                [
+                                    f"Tanggal {latest_bullish['date_label']}",
+                                    str(latest_bullish["description"]),
+                                ]
+                                if latest_bullish
+                                else None
+                            ),
+                            empty_message="Belum ada pattern bullish di range ini.",
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Bearish Terbaru",
+                            value=(str(latest_bearish["label"]) if latest_bearish else None),
+                            color=bearish_color,
+                            detail_lines=(
+                                [
+                                    f"Tanggal {latest_bearish['date_label']}",
+                                    str(latest_bearish["description"]),
+                                ]
+                                if latest_bearish
+                                else None
+                            ),
+                            empty_message="Belum ada pattern bearish di range ini.",
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Netral Terbaru",
+                            value=(str(latest_neutral["label"]) if latest_neutral else None),
+                            color=neutral_color,
+                            detail_lines=(
+                                [
+                                    f"Tanggal {latest_neutral['date_label']}",
+                                    str(latest_neutral["description"]),
+                                ]
+                                if latest_neutral
+                                else None
+                            ),
+                            empty_message="Belum ada pattern netral di range ini.",
+                        ),
+                    ],
+                )
+            )
+            continue
+
+        if indicator_key == "CHART_PATTERN":
+            summary = summarize_chart_patterns(result.data, params)
+            bullish_color = colors.get("bullish", "#22c55e")
+            bearish_color = colors.get("bearish", "#ef4444")
+            neutral_color = colors.get("neutral", "#38bdf8")
+            latest_pattern = summary["patterns"][-1] if summary["patterns"] else None
+            latest_bullish = summary["latest_by_direction"].get("bullish")
+            latest_bearish = summary["latest_by_direction"].get("bearish")
+            latest_neutral = summary["latest_by_direction"].get("neutral")
+            if latest_pattern is None:
+                section_html.append(
+                    build_indicator_note_section_html(
+                        title="Chart Pattern",
+                        summary_text="Belum ada chart pattern besar yang cocok di range chart aktif.",
+                        context_text=(
+                            f"Lookback {int(params['lookback'])} candle, pivot {int(params['pivot_window'])}, "
+                            f"toleransi harga {int(params['tolerance_pct'])}%."
+                        ),
+                        boxes_html=[
+                            build_indicator_note_info_box_html(
+                                label="Pattern Terbaru",
+                                value=None,
+                                color=neutral_color,
+                                empty_message="Belum ada chart pattern yang cocok di range ini.",
+                            ),
+                            build_indicator_note_info_box_html(
+                                label="Bullish Terbaru",
+                                value=None,
+                                color=bullish_color,
+                                empty_message="Belum ada chart pattern bullish.",
+                            ),
+                            build_indicator_note_info_box_html(
+                                label="Bearish Terbaru",
+                                value=None,
+                                color=bearish_color,
+                                empty_message="Belum ada chart pattern bearish.",
+                            ),
+                        ],
+                    )
+                )
+                continue
+
+            section_html.append(
+                build_indicator_note_section_html(
+                    title="Chart Pattern",
+                    summary_text=(
+                        f"Chart pattern terbaru adalah {latest_pattern['label']} pada {latest_pattern['date_label']}. "
+                        f"Total pola yang terbaca: {int(summary['total_patterns'])}."
+                    ),
+                    context_text=(
+                        f"Lookback {int(params['lookback'])} candle, pivot {int(params['pivot_window'])}, "
+                        f"toleransi harga {int(params['tolerance_pct'])}%. Label singkat tampil di chart utama dan garis pola digambar otomatis."
+                    ),
+                    boxes_html=[
+                        build_indicator_note_info_box_html(
+                            label="Pattern Terbaru",
+                            value=str(latest_pattern["label"]),
+                            color=(
+                                bullish_color if latest_pattern["direction"] == "bullish"
+                                else bearish_color if latest_pattern["direction"] == "bearish"
+                                else neutral_color
+                            ),
+                            detail_lines=[
+                                f"Tanggal {latest_pattern['date_label']}",
+                                str(latest_pattern["description"]),
+                                *[str(line) for line in latest_pattern.get("detail_lines") or []][:2],
+                            ],
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Bullish Terbaru",
+                            value=(str(latest_bullish["label"]) if latest_bullish else None),
+                            color=bullish_color,
+                            detail_lines=(
+                                [
+                                    f"Tanggal {latest_bullish['date_label']}",
+                                    str(latest_bullish["description"]),
+                                    *[str(line) for line in latest_bullish.get("detail_lines") or []][:2],
+                                ]
+                                if latest_bullish
+                                else None
+                            ),
+                            empty_message="Belum ada chart pattern bullish di range ini.",
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Bearish Terbaru",
+                            value=(str(latest_bearish["label"]) if latest_bearish else None),
+                            color=bearish_color,
+                            detail_lines=(
+                                [
+                                    f"Tanggal {latest_bearish['date_label']}",
+                                    str(latest_bearish["description"]),
+                                    *[str(line) for line in latest_bearish.get("detail_lines") or []][:2],
+                                ]
+                                if latest_bearish
+                                else None
+                            ),
+                            empty_message="Belum ada chart pattern bearish di range ini.",
+                        ),
+                        build_indicator_note_info_box_html(
+                            label="Netral Terbaru",
+                            value=(str(latest_neutral["label"]) if latest_neutral else None),
+                            color=neutral_color,
+                            detail_lines=(
+                                [
+                                    f"Tanggal {latest_neutral['date_label']}",
+                                    str(latest_neutral["description"]),
+                                    *[str(line) for line in latest_neutral.get("detail_lines") or []][:2],
+                                ]
+                                if latest_neutral
+                                else None
+                            ),
+                            empty_message="Belum ada chart pattern netral di range ini.",
+                        ),
+                    ],
+                )
+            )
+            continue
         if indicator_key == "TRENDLINE":
             summary = describe_auto_trendline(
                 result.data,
@@ -853,5 +1082,8 @@ def render_market_insight_card() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+
 
 
