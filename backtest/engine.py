@@ -14,12 +14,13 @@ from backtest.config import (
 )
 from backtest.metrics import build_trade_log, calculate_backtest_metrics
 from backtest.models import BacktestResult, Trade
-from strategies.base_strategy import StrategyPreparation
-from strategies.break_ema_strategy import prepare_break_ema_strategy
-from strategies.macd_strategy import prepare_macd_strategy
-from strategies.parabolic_sar_strategy import prepare_parabolic_sar_strategy
-from strategies.rsi_strategy import prepare_rsi_strategy
-from strategies.volume_breakout_strategy import prepare_volume_breakout_strategy
+from backtest.strategies.base_strategy import StrategyPreparation
+from backtest.strategies.break_ema_strategy import prepare_break_ema_strategy
+from backtest.strategies.break_ma_strategy import prepare_break_ma_strategy
+from backtest.strategies.macd_strategy import prepare_macd_strategy
+from backtest.strategies.parabolic_sar_strategy import prepare_parabolic_sar_strategy
+from backtest.strategies.rsi_strategy import prepare_rsi_strategy
+from backtest.strategies.volume_breakout_strategy import prepare_volume_breakout_strategy
 
 
 class BacktestError(Exception):
@@ -41,6 +42,7 @@ PREPARERS = {
     "RSI": prepare_rsi_strategy,
     "MACD": prepare_macd_strategy,
     "BREAK_EMA": prepare_break_ema_strategy,
+    "BREAK_MA": prepare_break_ma_strategy,
     "PARABOLIC_SAR": prepare_parabolic_sar_strategy,
     "VOLUME_BREAKOUT": prepare_volume_breakout_strategy,
 }
@@ -99,32 +101,90 @@ def _format_trade_timestamp(timestamp: pd.Timestamp) -> str:
     return timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _evaluate_exit_reason(
+def _evaluate_intrabar_risk_exit(
+    row: pd.Series,
+    position: _OpenPosition,
+    general_params: dict[str, Any],
+) -> tuple[str, float] | None:
+    """Check SL/TP/trailing using the active candle OHLC, not the next open."""
+    current_open = float(row["open"])
+    current_high = float(row["high"])
+    current_low = float(row["low"])
+    stop_loss_pct = float(general_params["stop_loss_pct"])
+    take_profit_pct = float(general_params["take_profit_pct"])
+    trailing_stop_pct = float(general_params["trailing_stop_pct"])
+
+    protective_levels: list[tuple[str, float]] = []
+    if stop_loss_pct > 0:
+        protective_levels.append(
+            ("stop_loss", position.entry_price * (1.0 - (stop_loss_pct / 100.0)))
+        )
+    if trailing_stop_pct > 0 and position.highest_close > 0:
+        protective_levels.append(
+            ("trailing_stop", position.highest_close * (1.0 - (trailing_stop_pct / 100.0)))
+        )
+
+    active_protective: tuple[str, float] | None = None
+    if protective_levels:
+        active_protective = max(protective_levels, key=lambda item: item[1])
+
+    take_profit_level = (
+        position.entry_price * (1.0 + (take_profit_pct / 100.0))
+        if take_profit_pct > 0
+        else None
+    )
+
+    if active_protective is not None:
+        protective_reason, protective_level = active_protective
+        if current_open <= protective_level:
+            return protective_reason, current_open
+
+    if take_profit_level is not None and current_open >= take_profit_level:
+        return "take_profit", current_open
+
+    if active_protective is not None:
+        protective_reason, protective_level = active_protective
+        if current_low <= protective_level:
+            return protective_reason, protective_level
+
+    if take_profit_level is not None and current_high >= take_profit_level:
+        return "take_profit", take_profit_level
+
+    return None
+
+
+def _evaluate_intrabar_strategy_exit(
+    row: pd.Series,
+    strategy_exit_price_column: str | None,
+) -> float | None:
+    """Evaluate one strategy exit that has a concrete level price on the active candle."""
+    if not strategy_exit_price_column:
+        return None
+
+    raw_exit_level = pd.to_numeric(
+        pd.Series([row.get(strategy_exit_price_column)]),
+        errors="coerce",
+    ).iloc[0]
+    if pd.isna(raw_exit_level):
+        return None
+
+    exit_level = float(raw_exit_level)
+    current_open = float(row["open"])
+    current_low = float(row["low"])
+    if current_open <= exit_level:
+        return current_open
+    if current_low <= exit_level:
+        return exit_level
+    return None
+
+
+def _evaluate_scheduled_exit_reason(
     row: pd.Series,
     position: _OpenPosition,
     general_params: dict[str, Any],
 ) -> str | None:
-    """Check whether the open position should exit based on the current close."""
-    close_price = float(row["close"])
-    stop_loss_pct = float(general_params["stop_loss_pct"])
-    take_profit_pct = float(general_params["take_profit_pct"])
-    trailing_stop_pct = float(general_params["trailing_stop_pct"])
+    """Check close-based exits that should still wait for the next candle open."""
     max_holding_bars = int(general_params["max_holding_bars"])
-
-    if stop_loss_pct > 0:
-        stop_loss_level = position.entry_price * (1.0 - (stop_loss_pct / 100.0))
-        if close_price <= stop_loss_level:
-            return "stop_loss"
-
-    if take_profit_pct > 0:
-        take_profit_level = position.entry_price * (1.0 + (take_profit_pct / 100.0))
-        if close_price >= take_profit_level:
-            return "take_profit"
-
-    if trailing_stop_pct > 0 and position.highest_close > 0:
-        trailing_stop_level = position.highest_close * (1.0 - (trailing_stop_pct / 100.0))
-        if close_price <= trailing_stop_level:
-            return "trailing_stop"
 
     if bool(row.get("exit_signal", False)):
         return "strategy_exit"
@@ -133,8 +193,6 @@ def _evaluate_exit_reason(
         return "max_holding_bars"
 
     return None
-
-
 def _close_position(
     position: _OpenPosition,
     exit_time: pd.Timestamp,
@@ -231,6 +289,8 @@ def run_backtest(
         strategy_params=normalized_strategy_params,
     )
     strategy_frame = prepared_strategy.frame.reset_index(drop=True)
+    risk_management_enabled = bool(prepared_strategy.risk_management_enabled)
+    strategy_exit_price_column = prepared_strategy.strategy_exit_price_column
     if len(strategy_frame) < 3:
         raise BacktestError("Data yang tersisa belum cukup setelah indikator dihitung.")
 
@@ -282,7 +342,7 @@ def run_backtest(
                         entry_price=executed_entry_price,
                         entry_cost=total_cost,
                         buy_fee=buy_fee,
-                        highest_close=current_close,
+                        highest_close=executed_entry_price,
                     )
             elif pending_action["action"] == "exit" and position is not None:
                 released_cash, closed_trade = _close_position(
@@ -299,19 +359,67 @@ def run_backtest(
                 cooldown_remaining = int(normalized_general_params["cooldown_bars"])
             pending_action = None
 
+        is_last_bar = index == len(strategy_frame) - 1
         if position is not None:
             position.bars_held += 1
-            position.highest_close = max(position.highest_close, current_close)
-
-        is_last_bar = index == len(strategy_frame) - 1
-        if position is not None and not is_last_bar:
-            exit_reason = _evaluate_exit_reason(row, position, normalized_general_params)
-            if exit_reason is not None:
-                pending_action = {
-                    "action": "exit",
-                    "reason": exit_reason,
-                }
-        elif position is None and not is_last_bar:
+            intrabar_exit = (
+                _evaluate_intrabar_risk_exit(
+                    row,
+                    position,
+                    normalized_general_params,
+                )
+                if risk_management_enabled
+                else None
+            )
+            strategy_exit_price = (
+                _evaluate_intrabar_strategy_exit(
+                    row,
+                    strategy_exit_price_column,
+                )
+                if bool(row.get("exit_signal", False))
+                else None
+            )
+            if intrabar_exit is not None:
+                exit_reason, raw_exit_price = intrabar_exit
+                released_cash, closed_trade = _close_position(
+                    position=position,
+                    exit_time=current_time,
+                    raw_exit_price=raw_exit_price,
+                    sell_fee_rate=sell_fee_rate,
+                    slippage_rate=slippage_rate,
+                    exit_reason=exit_reason,
+                )
+                cash += released_cash
+                trades.append(closed_trade)
+                position = None
+                cooldown_remaining = int(normalized_general_params["cooldown_bars"])
+            elif strategy_exit_price is not None:
+                released_cash, closed_trade = _close_position(
+                    position=position,
+                    exit_time=current_time,
+                    raw_exit_price=strategy_exit_price,
+                    sell_fee_rate=sell_fee_rate,
+                    slippage_rate=slippage_rate,
+                    exit_reason="strategy_exit",
+                )
+                cash += released_cash
+                trades.append(closed_trade)
+                position = None
+                cooldown_remaining = int(normalized_general_params["cooldown_bars"])
+            else:
+                position.highest_close = max(position.highest_close, current_close)
+                if not is_last_bar:
+                    exit_reason = _evaluate_scheduled_exit_reason(
+                        row,
+                        position,
+                        normalized_general_params,
+                    )
+                    if exit_reason is not None:
+                        pending_action = {
+                            "action": "exit",
+                            "reason": exit_reason,
+                        }
+        elif not is_last_bar:
             can_enter = (
                 index >= int(prepared_strategy.warmup_bars)
                 and bool(row.get("indicator_ready", False))
@@ -384,6 +492,17 @@ def run_backtest(
         initial_capital=initial_capital,
         final_equity=float(equity_curve["equity"].iloc[-1]),
     )
+
+
+
+
+
+
+
+
+
+
+
 
 
 

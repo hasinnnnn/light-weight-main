@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+MAIN_CHART_HEIGHT = 680
+INDICATOR_CHART_HEIGHT = 240
+VOLUME_PANEL_TOP_MARGIN = 0.78
+VOLUME_PANEL_BOTTOM_MARGIN = 0.0
+VOLUME_MA_WINDOW = 20
+OVERLAY_INDICATOR_KEYS = {
+    "EMA",
+    "EMA_CROSS",
+    "DOUBLE_EMA",
+    "TRIPLE_EMA",
+    "MA",
+    "MA_CROSS",
+    "DOUBLE_MA",
+    "TRIPLE_MA",
+    "BOLLINGER_BANDS",
+    "VWAP",
+    "PARABOLIC_SAR",
+    "CANDLE_PATTERN",
+    "CHART_PATTERN",
+    "CONSOLIDATION_AREA",
+    "VOLUME_BREAKOUT_ZONE",
+    "TRENDLINE",
+    "MAJOR_TRENDLINE",
+    "NEAREST_SUPPORT_RESISTANCE",
+    "STRONG_SUPPORT_RESISTANCE",
+    "FIBONACCI",
+    "PIVOT_POINT_STANDARD",
+}
+PANEL_INDICATOR_KEYS = {"ATR", "PRICE_OSCILLATOR", "RSI", "MACD", "STOCHASTIC", "STOCHASTIC_RSI"}
+EMA_COLORS = ["#38bdf8", "#f59e0b", "#22c55e"]
+MA_COLORS = ["#fb923c", "#a855f7", "#14b8a6"]
+BOLLINGER_COLORS = {
+    "upper": "#60a5fa",
+    "basis": "#f8fafc",
+    "lower": "#f472b6",
+}
+VWAP_COLOR = "#fbbf24"
+PARABOLIC_SAR_COLOR = "#38bdf8"
+CANDLE_PATTERN_COLORS = {
+    "bullish": "#22c55e",
+    "bearish": "#ef4444",
+    "neutral": "#f8fafc",
+}
+CHART_PATTERN_COLORS = {
+    "bullish": "#22c55e",
+    "bearish": "#ef4444",
+    "neutral": "#38bdf8",
+    "line": "#1d4ed8",
+}
+CONSOLIDATION_AREA_COLORS = {
+    "zone": "#38bdf8",
+    "active": "#22c55e",
+}
+CONSOLIDATION_AREA_FILL_ALPHA = 0.14
+CONSOLIDATION_AREA_ACTIVE_FILL_ALPHA = 0.18
+VOLUME_BREAKOUT_ZONE_COLOR = "#38bdf8"
+VOLUME_BREAKOUT_BREAKOUT_COLOR = "#22c55e"
+VOLUME_BREAKOUT_FILL_ALPHA = 0.16
+VOLUME_BREAKOUT_LOW_VOLUME_COLOR = "#94a3b8"
+ATR_COLOR = "#f59e0b"
+PRICE_OSCILLATOR_COLOR = "#38bdf8"
+TRENDLINE_COLORS = {
+    "up": "#22c55e",
+    "down": "#ef4444",
+}
+NEAREST_SUPPORT_RESISTANCE_COLORS = {
+    "resistance": "#22c55e",
+    "support": "#ef4444",
+}
+NEAREST_SUPPORT_RESISTANCE_FILL_ALPHA = 0.16
+NEAREST_SUPPORT_RESISTANCE_LINE_ALPHA = 0.95
+STRONG_SUPPORT_RESISTANCE_COLORS = {
+    "resistance": "#22c55e",
+    "support": "#ef4444",
+}
+STRONG_SUPPORT_RESISTANCE_FILL_ALPHA = 0.20
+STRONG_SUPPORT_RESISTANCE_LINE_ALPHA = 0.98
+STRONG_SUPPORT_RESISTANCE_VOLUME_THRESHOLD = 1.15
+STOCHASTIC_COLORS = {
+    "k": "#38bdf8",
+    "d": "#f59e0b",
+}
+PIVOT_LEVELS = [
+    ("PP", "#f8fafc"),
+    ("R1", "#fb7185"),
+    ("R2", "#ef4444"),
+    ("R3", "#b91c1c"),
+    ("S1", "#60a5fa"),
+    ("S2", "#2563eb"),
+    ("S3", "#1d4ed8"),
+]
+

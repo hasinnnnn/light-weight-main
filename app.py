@@ -3,9 +3,9 @@ from __future__ import annotations
 import streamlit as st
 
 from state.app_state import build_effective_indicator_configs, initialize_session_state, run_selected_backtest
-from charts.chart_service import ChartServiceError, render_candlestick_chart, render_indicator_charts
+from charts.chart_service import ChartServiceError, render_candlestick_chart
 from data.market_data_service import DataServiceError, load_market_data
-from ui.backtest_result_card import render_backtest_result_card
+from ui.backtest import render_backtest_result_card
 from ui.market_insight import render_indicator_explanation_card, render_market_insight_card
 from ui.theme import render_app_styles
 from ui.top_toolbar import render_top_toolbar
@@ -85,10 +85,6 @@ def main() -> None:
                 else None
             ),
         )
-        render_indicator_charts(
-            data=result.data,
-            indicator_configs=indicator_configs,
-        )
         if st.session_state.backtest_result is not None:
             render_backtest_result_card(st.session_state.backtest_result)
         render_indicator_explanation_card(indicator_configs)
@@ -99,5 +95,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

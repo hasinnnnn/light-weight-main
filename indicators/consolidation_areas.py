@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 
 from backtest.config import get_default_volume_breakout_params
-from strategies.volume_breakout_strategy import build_volume_breakout_analysis
+from backtest.strategies.volume_breakout_strategy import build_volume_breakout_analysis
 
 
 def get_default_consolidation_area_params() -> dict[str, Any]:
@@ -207,3 +207,4 @@ def summarize_consolidation_areas(
         "total_areas": len(areas),
         "params": normalized_params,
     }
+
