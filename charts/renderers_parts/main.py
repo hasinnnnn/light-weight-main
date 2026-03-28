@@ -13,7 +13,6 @@ from charts.chart_core import (
     VOLUME_PANEL_BOTTOM_MARGIN,
     VOLUME_PANEL_TOP_MARGIN,
     _apply_bei_price_fraction_format,
-    _apply_mobile_touch_behavior,
     _build_price_dataframe,
     _build_volume_dataframe,
     _indicator_key,
@@ -54,7 +53,7 @@ def _render_volume_panel(chart: Any, data: pd.DataFrame) -> None:
         return
 
     line_name = f"Volume MA {VOLUME_MA_WINDOW}"
-    latest_volume_color = str(volume_frame["color"].iloc[-1])
+
     histogram = chart.create_histogram(
         name="Volume",
         color="rgba(148, 163, 184, 0.40)",
@@ -102,9 +101,8 @@ def _render_volume_panel(chart: Any, data: pd.DataFrame) -> None:
                     minMove: 1,
                     formatter: formatVolume,
                 }},
-                lastValueVisible: true,
-                priceLineVisible: true,
-                priceLineColor: '{latest_volume_color}'
+                lastValueVisible: false,
+                priceLineVisible: false
             }});
             {volume_ma_line.id}.series.applyOptions({{
                 priceFormat: {{
@@ -112,7 +110,7 @@ def _render_volume_panel(chart: Any, data: pd.DataFrame) -> None:
                     minMove: 1,
                     formatter: formatVolume,
                 }},
-                lastValueVisible: true,
+                lastValueVisible: false,
                 priceLineVisible: false,
                 crosshairMarkerVisible: false
             }});
@@ -148,7 +146,6 @@ def render_candlestick_chart(
 
     chart.set(price_frame.drop(columns=["volume"], errors="ignore"))
     _render_volume_panel(chart, data)
-    _apply_mobile_touch_behavior(chart)
     latest_close = float(pd.to_numeric(price_frame["close"], errors="coerce").iloc[-1])
     if use_bei_price_fractions and latest_close > 0:
         _apply_bei_price_fraction_format(chart, latest_close)

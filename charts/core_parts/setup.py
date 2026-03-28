@@ -21,7 +21,13 @@ def _get_streamlit_chart_class() -> Any:
     return StreamlitChart
 
 
-from charts.core_parts.constants import MAIN_CHART_HEIGHT, VOLUME_PANEL_BOTTOM_MARGIN, VOLUME_PANEL_TOP_MARGIN
+from charts.core_parts.constants import (
+    MAIN_CHART_HEIGHT,
+    MOBILE_TOUCH_BREAKPOINT,
+    MOBILE_TOUCH_RIGHT_OFFSET,
+    VOLUME_PANEL_BOTTOM_MARGIN,
+    VOLUME_PANEL_TOP_MARGIN,
+)
 
 
 def _style_streamlit_chart(chart: Any, watermark_text: str) -> None:
@@ -108,6 +114,7 @@ def build_streamlit_chart(
         inner_height=inner_height,
     )
     _style_streamlit_chart(chart, display_name or symbol)
+    _apply_mobile_touch_behavior(chart)
     return chart
 
 
@@ -130,6 +137,7 @@ def build_streamlit_subchart(
         sync_crosshairs_only=sync_crosshairs_only,
     )
     _style_streamlit_chart(chart, display_name or symbol)
+    _apply_mobile_touch_behavior(chart)
     return chart
 
 
@@ -181,7 +189,7 @@ def _apply_bei_price_fraction_format(chart: Any, latest_price: float) -> None:
 
 
 def _apply_mobile_touch_behavior(chart: Any) -> None:
-    """Prefer page scrolling on touch devices so chart gestures do not hijack mobile scroll."""
+    """Keep horizontal drag and pinch alive on touch devices without hijacking page scroll."""
     chart.run_script(
         f"""
         (() => {{
@@ -189,20 +197,37 @@ def _apply_mobile_touch_behavior(chart: Any) -> None:
                 const isTouchDevice =
                     window.matchMedia('(pointer: coarse)').matches ||
                     window.matchMedia('(hover: none)').matches ||
-                    window.innerWidth <= 820;
-                if (!isTouchDevice) {{
-                    return;
-                }}
-
+                    window.innerWidth <= {MOBILE_TOUCH_BREAKPOINT};
                 if (typeof {chart.id} === 'undefined' || !{chart.id}.chart) {{
                     return;
                 }}
 
-                {chart.id}.chart.applyOptions({{
+                const handler = {chart.id};
+                const root = handler.wrapper || handler.div;
+                if (root) {{
+                    root.style.touchAction = isTouchDevice ? 'pan-y pinch-zoom' : 'auto';
+                }}
+
+                if (!isTouchDevice) {{
+                    return;
+                }}
+
+                const chartOptions = typeof handler.chart.options === 'function'
+                    ? handler.chart.options()
+                    : {{}};
+                const timeScaleOptions = chartOptions.timeScale || {{}};
+
+                handler.chart.applyOptions({{
+                    timeScale: {{
+                        rightOffset: Math.max(
+                            Number(timeScaleOptions.rightOffset || 0),
+                            {MOBILE_TOUCH_RIGHT_OFFSET}
+                        ),
+                    }},
                     handleScroll: {{
                         mouseWheel: true,
                         pressedMouseMove: true,
-                        horzTouchDrag: false,
+                        horzTouchDrag: true,
                         vertTouchDrag: false,
                     }},
                     handleScale: {{
@@ -215,16 +240,17 @@ def _apply_mobile_touch_behavior(chart: Any) -> None:
                             price: true,
                         }},
                         mouseWheel: true,
-                        pinch: false,
+                        pinch: true,
                     }},
                     kineticScroll: {{
                         mouse: false,
-                        touch: false,
+                        touch: true,
                     }},
                 }});
             }} catch (error) {{
                 console.debug('mobile chart touch preset skipped', error);
             }}
         }})();
-        """
+        """,
+        run_last=True,
     )
