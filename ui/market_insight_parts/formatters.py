@@ -31,6 +31,52 @@ def format_metric_value(value: float | None, use_integer_price: bool = False) ->
     return format_price_value(float(value))
 
 
+def format_signed_percent(value: float) -> str:
+    """Format one percentage with an explicit sign only when it moves."""
+    if value > 0:
+        return f"+{value:.2f}%"
+    if value < 0:
+        return f"{value:.2f}%"
+    return "0.00%"
+
+
+def format_price_change_value(
+    value: float,
+    use_integer_price: bool = False,
+    *,
+    include_sign: bool = True,
+) -> str:
+    """Format one absolute price change using market-appropriate precision."""
+    absolute_value = abs(float(value))
+    if absolute_value < 1e-9:
+        return "0" if use_integer_price else "0.00"
+
+    if use_integer_price:
+        formatted_value = f"{absolute_value:,.0f}"
+    else:
+        formatted_value = format_price_value(absolute_value)
+
+    if not include_sign:
+        return formatted_value
+    if value < 0:
+        return f"-{formatted_value}"
+    return formatted_value
+
+
+def format_price_change_with_percent(
+    change_value: float,
+    change_percent: float,
+    *,
+    use_integer_price: bool = False,
+    include_sign: bool = True,
+) -> str:
+    """Format one combined price-change block like `15 (+0.93%)`."""
+    return (
+        f"{format_price_change_value(change_value, use_integer_price=use_integer_price, include_sign=include_sign)} "
+        f"({format_signed_percent(change_percent)})"
+    )
+
+
 def format_compact_metric(value: float | None) -> str:
     """Format one large count/value into K/M/B/T notation."""
     if value is None:

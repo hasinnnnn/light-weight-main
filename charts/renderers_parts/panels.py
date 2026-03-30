@@ -28,6 +28,54 @@ from indicators.stochastic import (
 )
 
 
+def _render_oscillator_reference_lines(chart: Any, frame: pd.DataFrame) -> None:
+    """Render shared guide lines for oscillator panels as explicit line series."""
+    if frame.empty or "time" not in frame.columns:
+        return
+
+    sorted_frame = frame.copy()
+    sorted_frame["time"] = pd.to_datetime(sorted_frame["time"], errors="coerce")
+    sorted_frame = sorted_frame.dropna(subset=["time"]).sort_values("time")
+    if sorted_frame.empty:
+        return
+
+    start_time = sorted_frame.iloc[0]["time"]
+    end_time = sorted_frame.iloc[-1]["time"]
+    if start_time == end_time:
+        return
+
+    for level in [80, 60, 20]:
+        guide_series = chart.create_line(
+            name="",
+            color="rgba(96, 165, 250, 0.72)",
+            style="dotted",
+            width=2,
+            price_line=False,
+            price_label=False,
+        )
+        guide_series.set(
+            pd.DataFrame(
+                [
+                    {"time": start_time, "value": float(level)},
+                    {"time": end_time, "value": float(level)},
+                ]
+            )
+        )
+        guide_series.run_script(
+            f"""
+            {guide_series.id}.series.applyOptions({{
+                lineVisible: true,
+                pointMarkersVisible: false,
+                crosshairMarkerVisible: false,
+                lastValueVisible: false,
+                priceLineVisible: false,
+                lineWidth: 2,
+                color: 'rgba(96, 165, 250, 0.72)'
+            }})
+            """
+        )
+
+
 def _render_rsi_indicator(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
     """Render RSI into a dedicated chart."""
     window = _indicator_params(indicator).get("length", 14)
@@ -45,22 +93,7 @@ def _render_rsi_indicator(chart: Any, data: pd.DataFrame, indicator: dict[str, A
         price_label=True,
     )
     rsi_line.set(rsi_frame)
-    chart.horizontal_line(
-        price=70,
-        color="rgba(248, 113, 113, 0.55)",
-        width=1,
-        style="dashed",
-        text="70",
-        axis_label_visible=False,
-    )
-    chart.horizontal_line(
-        price=30,
-        color="rgba(96, 165, 250, 0.55)",
-        width=1,
-        style="dashed",
-        text="30",
-        axis_label_visible=False,
-    )
+    _render_oscillator_reference_lines(chart, rsi_frame)
 
 
 
@@ -216,15 +249,7 @@ def _render_stochastic_indicator(chart: Any, data: pd.DataFrame, indicator: dict
     )
     d_line.set(stochastic_frame[["time", "%D"]])
 
-    for level, color in [(80, "rgba(248, 113, 113, 0.55)"), (20, "rgba(96, 165, 250, 0.55)")]:
-        chart.horizontal_line(
-            price=level,
-            color=color,
-            width=1,
-            style="dashed",
-            text=str(level),
-            axis_label_visible=False,
-        )
+    _render_oscillator_reference_lines(chart, stochastic_frame)
 
 
 
@@ -260,15 +285,7 @@ def _render_stochastic_rsi_indicator(chart: Any, data: pd.DataFrame, indicator: 
     )
     d_line.set(stochastic_rsi_frame[["time", "%D"]])
 
-    for level, color in [(80, "rgba(248, 113, 113, 0.55)"), (20, "rgba(96, 165, 250, 0.55)")]:
-        chart.horizontal_line(
-            price=level,
-            color=color,
-            width=1,
-            style="dashed",
-            text=str(level),
-            axis_label_visible=False,
-        )
+    _render_oscillator_reference_lines(chart, stochastic_rsi_frame)
 
 
 

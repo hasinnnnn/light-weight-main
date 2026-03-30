@@ -33,6 +33,18 @@ from indicators.consolidation_areas import detect_consolidation_areas
 from charts.renderers_parts.common import _render_text_marker_series
 
 
+def _build_support_resistance_axis_label(kind: str, direction: str, bounces: int) -> str:
+    """Return the compact right-axis label for support/resistance overlays."""
+    prefix_map = {
+        ("nearest", "support"): "SD",
+        ("nearest", "resistance"): "RD",
+        ("strong", "support"): "SK",
+        ("strong", "resistance"): "RK",
+    }
+    prefix = prefix_map[(kind, direction)]
+    return f"{prefix} x{int(bounces)}"
+
+
 def render_volume_breakout_zone(chart: Any, data: pd.DataFrame, indicator: dict[str, Any]) -> None:
     """Render one breakout-from-consolidation setup on price and volume panels."""
     colors = _indicator_colors(indicator)
@@ -302,7 +314,7 @@ def render_nearest_support_resistance(
     if summary is None:
         return
 
-    for direction, label in [("support", "Support"), ("resistance", "Resistance")]:
+    for direction in ["support", "resistance"]:
         level = summary.get(direction)
         if level is None:
             continue
@@ -323,7 +335,7 @@ def render_nearest_support_resistance(
             color=_with_alpha(color, NEAREST_SUPPORT_RESISTANCE_LINE_ALPHA),
             width=2,
             style="solid",
-            text=f"{label} x{int(level['bounces'])}",
+            text=_build_support_resistance_axis_label("nearest", direction, int(level["bounces"])),
             axis_label_visible=False,
         )
 
@@ -341,7 +353,7 @@ def render_strong_support_resistance(
     if summary is None:
         return
 
-    for direction, label in [("support", "Strong Support"), ("resistance", "Strong Resistance")]:
+    for direction in ["support", "resistance"]:
         level = summary.get(direction)
         if level is None:
             continue
@@ -362,10 +374,7 @@ def render_strong_support_resistance(
             color=_with_alpha(color, STRONG_SUPPORT_RESISTANCE_LINE_ALPHA),
             width=2,
             style="solid",
-            text=(
-                f"{label} x{int(level['bounces'])}"
-                f" Vol {float(level['average_volume_ratio']):.2f}x"
-            ),
+            text=_build_support_resistance_axis_label("strong", direction, int(level["bounces"])),
             axis_label_visible=False,
         )
 

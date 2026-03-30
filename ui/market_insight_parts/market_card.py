@@ -6,7 +6,12 @@ import streamlit as st
 
 from data.market_data_service import DataLoadResult
 
-from .formatters import format_compact_metric, format_metric_value, format_price_value
+from .formatters import (
+    format_compact_metric,
+    format_metric_value,
+    format_price_change_with_percent,
+    format_price_value,
+)
 
 def build_market_stat_html(
     label: str,
@@ -212,17 +217,30 @@ def build_market_session_stats_html(result: DataLoadResult) -> str:
     )
 
 
-def build_price_change_state(current_price: float, previous_close: float | None) -> tuple[str, str, str]:
-    """Return direction, arrow, and formatted percentage change."""
+def build_price_change_state(
+    current_price: float,
+    previous_close: float | None,
+    *,
+    use_integer_price: bool = False,
+) -> tuple[str, str]:
+    """Return direction class and formatted change text."""
     if previous_close is None or previous_close == 0:
-        return "change-flat", "&#8212;", "0.00%"
+        return "change-flat", "-"
 
+    change_value = current_price - previous_close
     change_ratio = ((current_price - previous_close) / previous_close) * 100
+    arrow = "▲" if change_ratio > 0 else "▼" if change_ratio < 0 else "—"
+    change_text = format_price_change_with_percent(
+        change_value,
+        change_ratio,
+        use_integer_price=use_integer_price,
+        include_sign=False,
+    )
     if change_ratio > 0:
-        return "change-up", "&#9650;", f"+{change_ratio:.2f}%"
+        return "change-up", f"{arrow} {change_text}"
     if change_ratio < 0:
-        return "change-down", "&#9660;", f"{change_ratio:.2f}%"
-    return "change-flat", "&#8212;", "0.00%"
+        return "change-down", f"{arrow} {change_text}"
+    return "change-flat", f"{arrow} {change_text}"
 
 
 
@@ -241,9 +259,10 @@ def render_market_insight_card() -> None:
     subtitle_html = f'<div class="insight-subtitle">{subtitle}</div>' if subtitle else ""
     trend_class = "trend-up" if insight.trend_label == "Uptrend" else "trend-down"
     risk_class = "risk-low" if insight.risk_label == "Low Risk" else "risk-high"
-    change_class, change_arrow, change_percent = build_price_change_state(
+    change_class, change_text = build_price_change_state(
         current_price=result.current_price,
         previous_close=result.previous_close,
+        use_integer_price=bool(result.uses_bei_price_fractions),
     )
     formatted_price = html.escape(format_price_value(result.current_price))
     market_stats_html = build_market_session_stats_html(result)
@@ -254,7 +273,7 @@ def render_market_insight_card() -> None:
             <div class="insight-header">
                 <div class="insight-title">{symbol}</div>
                 <div class="insight-price">{formatted_price}</div>
-                <div class="insight-change {change_class}">{change_arrow} {html.escape(change_percent)}</div>
+                <div class="insight-change {change_class}">{html.escape(change_text)}</div>
             </div>
             {subtitle_html}
             {market_stats_html}

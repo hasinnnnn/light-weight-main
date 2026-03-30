@@ -8,6 +8,7 @@ import streamlit as st
 from charts.chart_core import INDICATOR_CHART_HEIGHT, MAIN_CHART_HEIGHT, VOLUME_MA_WINDOW, _build_price_dataframe, _build_volume_dataframe
 from charts.renderers_parts.main import _resolve_main_chart_layout
 from indicators.moving_averages import build_moving_average_dataframe
+from state.parts.screener_state import close_screener_page, open_screener_page
 from state.parts.session_defaults import initialize_session_state
 
 
@@ -31,9 +32,21 @@ class ChartDefaultTests(unittest.TestCase):
     def test_initialize_session_state_sets_bumi_and_visible_default_ema(self) -> None:
         initialize_session_state()
         self.assertEqual(st.session_state.symbol_input, "BUMI")
+        self.assertEqual(st.session_state.current_app_page, "chart")
+        self.assertEqual(st.session_state.screener_ema_period, 10)
+        self.assertEqual(st.session_state.screener_interval_label, "1 hari")
+        self.assertEqual(st.session_state.screener_period_label, "YTD")
+        self.assertEqual(st.session_state.screener_selected_symbols, [])
         self.assertEqual(len(st.session_state.active_indicators), 1)
         self.assertEqual(st.session_state.active_indicators[0]["key"], "EMA")
         self.assertTrue(st.session_state.active_indicators[0]["visible"])
+
+    def test_screener_page_state_can_open_and_close(self) -> None:
+        initialize_session_state()
+        open_screener_page()
+        self.assertEqual(st.session_state.current_app_page, "screener")
+        close_screener_page()
+        self.assertEqual(st.session_state.current_app_page, "chart")
 
     def test_price_frame_keeps_volume_source_data(self) -> None:
         frame = _build_price_dataframe(_build_sample_frame())

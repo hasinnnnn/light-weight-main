@@ -16,8 +16,8 @@ def build_stochastic_dataframe(
     indicator_frame = build_hlcv_source(data)
     highest_high = indicator_frame["high"].rolling(window=k_length, min_periods=1).max()
     lowest_low = indicator_frame["low"].rolling(window=k_length, min_periods=1).min()
-    denominator = (highest_high - lowest_low).replace(0, pd.NA)
-    raw_k = 100 * (indicator_frame["close"] - lowest_low).div(denominator)
+    denominator = (highest_high - lowest_low).replace(0, float("nan"))
+    raw_k = pd.to_numeric(100 * (indicator_frame["close"] - lowest_low).div(denominator), errors="coerce")
     smooth_k = raw_k.rolling(window=k_smoothing, min_periods=1).mean()
     d_line = smooth_k.rolling(window=d_length, min_periods=1).mean()
     indicator_frame["%K"] = smooth_k
@@ -38,8 +38,8 @@ def build_stochastic_rsi_dataframe(
     rsi = calculate_chart_rsi(indicator_frame["close"], rsi_length)
     lowest_rsi = rsi.rolling(window=stoch_length, min_periods=1).min()
     highest_rsi = rsi.rolling(window=stoch_length, min_periods=1).max()
-    denominator = (highest_rsi - lowest_rsi).replace(0, pd.NA)
-    raw_stoch = 100 * (rsi - lowest_rsi).div(denominator)
+    denominator = (highest_rsi - lowest_rsi).replace(0, float("nan"))
+    raw_stoch = pd.to_numeric(100 * (rsi - lowest_rsi).div(denominator), errors="coerce")
     smooth_k = raw_stoch.rolling(window=k_smoothing, min_periods=1).mean()
     d_line = smooth_k.rolling(window=d_length, min_periods=1).mean()
     indicator_frame["%K"] = smooth_k

@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import streamlit as st
 
-from state.app_state import close_backtest_parameter_editor, open_backtest_parameter_editor, remove_backtest_indicator
+from state.app_state import (
+    close_backtest_parameter_editor,
+    open_backtest_parameter_editor,
+    open_screener_page,
+    remove_backtest_indicator,
+)
 from ui.backtest_parameter_dialog import render_backtest_parameter_dialog
 from ui.backtest_tab import render_backtest_tab
+from ui.screener import render_screener_tab
 from .editor_view import render_indicator_editor_view
 from .tabs import render_indicator_active_tab, render_indicator_list_tab
 
@@ -19,8 +25,8 @@ def render_indicator_dialog() -> None:
         render_backtest_parameter_dialog()
         return
 
-    active_tab, indicator_list_tab, backtest_tab = st.tabs(
-        ["Indikator Aktif", "List Indikator", "Backtest"]
+    active_tab, indicator_list_tab, backtest_tab, screener_tab = st.tabs(
+        ["Indikator Aktif", "List Indikator", "Backtest", "Screener"]
     )
 
     with active_tab:
@@ -45,6 +51,12 @@ def render_indicator_dialog() -> None:
             st.session_state.show_indicator_preview = bool(
                 st.session_state.backtest_params_general.get("show_indicator_preview", True)
             )
+            st.rerun()
+
+    with screener_tab:
+        screener_actions = render_screener_tab()
+        if screener_actions["open_page"]:
+            open_screener_page()
             st.rerun()
 
 

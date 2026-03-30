@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import streamlit as st
 
-from state.app_state import build_effective_indicator_configs, initialize_session_state, run_selected_backtest
+from state.app_state import (
+    build_effective_indicator_configs,
+    initialize_session_state,
+    is_screener_page_active,
+    run_selected_backtest,
+)
 from charts.chart_service import ChartServiceError, render_candlestick_chart
 from data.market_data_service import DataServiceError, load_market_data
 from ui.backtest import render_backtest_result_card
 from ui.market_insight import render_indicator_explanation_card, render_market_insight_card
+from ui.screener import render_screener_page
 from ui.theme import render_app_styles
 from ui.top_toolbar import render_top_toolbar
 
@@ -52,6 +58,10 @@ def main() -> None:
 
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
+
+    if is_screener_page_active():
+        render_screener_page()
+        return
 
     result = st.session_state.loaded_result
     if result is not None:

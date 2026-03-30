@@ -20,6 +20,7 @@ from state.parts.indicator_state import initialize_indicator_state
 
 def _default_session_state_values() -> dict[str, Any]:
     return {
+        "current_app_page": "chart",
         "symbol_input": "BUMI",
         "interval_option": "1 hari",
         "period_option": "YTD",
@@ -47,6 +48,10 @@ def _default_session_state_values() -> dict[str, Any]:
         "show_indicator_preview": True,
         "backtest_parameter_modal_open": False,
         "backtest_last_error": "",
+        "screener_ema_period": 10,
+        "screener_interval_label": "1 hari",
+        "screener_period_label": "YTD",
+        "screener_selected_symbols": [],
     }
 
 
