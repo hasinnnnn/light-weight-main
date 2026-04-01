@@ -103,8 +103,9 @@ def render_screener_page() -> None:
 
     st.caption(
         "Mode entry dan mode exit di screener memakai parameter Break EMA yang sudah ada di backtest. "
-        f"Tombol `Screen` akan menyalakan worker Telegram tiap {TELEGRAM_SEND_INTERVAL_SECONDS} detik "
-        "untuk saham yang sedang diceklis. Data tabel langsung mengikuti kombinasi parameter yang dipilih."
+        f"Tombol `Screen` akan menyalakan worker Telegram tiap {TELEGRAM_SEND_INTERVAL_SECONDS // 60} menit "
+        "untuk saham yang sedang diceklis. Worker screening real mengikuti Panjang EMA, Mode Entry, Mode Exit, dan Interval. "
+        "Dropdown Periode tetap dipakai untuk tabel screener, tapi tidak dipakai sebagai parameter alert screening."
     )
 
     with st.spinner("Menghitung data screener EMA..."):
@@ -123,25 +124,25 @@ def render_screener_page() -> None:
             st.error("Centang dulu minimal satu saham sebelum menyalakan Screen ke Telegram.")
         elif not telegram_credentials_ready():
             st.error(
-                "Isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_GROUP_ID` dulu di Streamlit secrets, environment variable, atau `.env`."
+                "Isi `TELEGRAM_BOT_TOKEN`, `TELEGRAM_GROUP_ID`, dan `TELEGRAM_GROUP_LOG_ID` dulu di Streamlit secrets, environment variable, atau `.env`."
             )
         else:
             active_worker = start_telegram_worker(
                 selected_symbols=selected_symbols,
                 interval_label=interval_label,
-                period_label=period_label,
                 ema_period=ema_period,
                 breakdown_confirm_mode=entry_mode,
                 exit_mode=exit_mode,
             )
             st.success(
-                f"Worker Telegram aktif tiap {TELEGRAM_SEND_INTERVAL_SECONDS} detik untuk {len(selected_symbols)} saham."
+                f"Worker Telegram aktif tiap {TELEGRAM_SEND_INTERVAL_SECONDS // 60} menit untuk {len(selected_symbols)} saham."
             )
             st.rerun()
 
     if active_worker is not None:
+        active_interval_minutes = max(1, int(active_worker["interval_seconds"]) // 60)
         st.success(
-            f"Telegram worker aktif setiap {int(active_worker['interval_seconds'])} detik "
+            f"Telegram worker aktif setiap {active_interval_minutes} menit "
             f"untuk {len(active_worker['selected_symbols'])} saham terpilih."
         )
         if st.button("Stop Telegram Worker", key="screener_stop_telegram_worker", use_container_width=False):

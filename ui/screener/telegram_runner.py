@@ -13,15 +13,17 @@ from urllib import parse, request
 import pandas as pd
 
 from ui.backtest.sections.parameter_forms import option_label
-from ui.screener.data import build_ema_screener_rows
+from ui.screener.signal_engine import build_break_ema_signal_snapshots
 from ui.screener.table import SCREENER_SELECTION_COLUMN, build_screener_table_dataframe
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = ROOT_DIR / ".runtime"
 TELEGRAM_WORKER_STATE_PATH = RUNTIME_DIR / "screener_telegram_worker.json"
+TELEGRAM_RUNTIME_STATE_PATH = RUNTIME_DIR / "screener_telegram_runtime.json"
 TELEGRAM_MESSAGE_MAX_LENGTH = 3500
-TELEGRAM_SEND_INTERVAL_SECONDS = 30
+TELEGRAM_SEND_INTERVAL_SECONDS = 300
+TELEGRAM_RUNTIME_EVENT_LIMIT = 300
 VISIBLE_TELEGRAM_COLUMNS = [
     "Kode Saham",
     "Harga Sekarang",
@@ -30,6 +32,20 @@ VISIBLE_TELEGRAM_COLUMNS = [
     "Laba Bersih",
     "Win Rate Backtest EMA",
 ]
+INDONESIAN_MONTH_NAMES = {
+    1: "Januari",
+    2: "Februari",
+    3: "Maret",
+    4: "April",
+    5: "Mei",
+    6: "Juni",
+    7: "Juli",
+    8: "Agustus",
+    9: "September",
+    10: "Oktober",
+    11: "November",
+    12: "Desember",
+}
 
 
 def ensure_runtime_dir() -> None:
@@ -56,7 +72,7 @@ def load_env_values(env_path: Path | None = None) -> dict[str, str]:
 def load_os_env_values() -> dict[str, str]:
     """Read Telegram credentials from process environment variables."""
     values: dict[str, str] = {}
-    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_GROUP_ID", "TELEGRAM_USER_ID"):
+    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_GROUP_ID", "TELEGRAM_GROUP_LOG_ID", "TELEGRAM_USER_ID"):
         raw_value = os.environ.get(key, "")
         if str(raw_value).strip():
             values[key] = str(raw_value).strip()
@@ -76,7 +92,7 @@ def load_streamlit_secrets_values() -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_GROUP_ID", "TELEGRAM_USER_ID"):
+    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_GROUP_ID", "TELEGRAM_GROUP_LOG_ID", "TELEGRAM_USER_ID"):
         try:
             raw_value = secrets.get(key, "")
         except Exception:
@@ -98,7 +114,7 @@ def load_telegram_settings() -> dict[str, str]:
 
 
 def load_telegram_credentials() -> tuple[str, str]:
-    """Read Telegram bot credentials from Streamlit secrets, env vars, or .env."""
+    """Read the bot token and main alert group id."""
     env_values = load_telegram_settings()
     return (
         str(env_values.get("TELEGRAM_BOT_TOKEN", "")).strip(),
@@ -106,10 +122,17 @@ def load_telegram_credentials() -> tuple[str, str]:
     )
 
 
+def load_telegram_group_log_id() -> str:
+    """Read the log-group destination used for every screening cycle."""
+    env_values = load_telegram_settings()
+    return str(env_values.get("TELEGRAM_GROUP_LOG_ID", "")).strip()
+
+
 def telegram_credentials_ready() -> bool:
-    """Return whether both Telegram token and group id are available."""
+    """Return whether the bot token, main group, and log group are all available."""
     bot_token, group_id = load_telegram_credentials()
-    return bool(bot_token and group_id)
+    log_group_id = load_telegram_group_log_id()
+    return bool(bot_token and group_id and log_group_id)
 
 
 def build_selected_screener_dataframe(
@@ -125,52 +148,6 @@ def build_selected_screener_dataframe(
     if selected_frame.empty:
         return selected_frame
     return selected_frame[VISIBLE_TELEGRAM_COLUMNS].reset_index(drop=True)
-
-
-def _build_message_header(config: dict[str, Any], selected_count: int) -> str:
-    timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return (
-        "Screener EMA\n"
-        f"Waktu: {timestamp_text}\n"
-        f"Interval: {config['interval_label']} | Periode: {config['period_label']}\n"
-        f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
-        f"Exit: {option_label(str(config['exit_mode']))}\n"
-        f"Jumlah saham terpilih: {selected_count}"
-    )
-
-
-def _build_stock_block(row: pd.Series) -> str:
-    lines = [f"Kode Saham: {row['Kode Saham']}"]
-    for column_name in VISIBLE_TELEGRAM_COLUMNS[1:]:
-        lines.append(f"{column_name}: {row[column_name]}")
-    return "\n".join(lines)
-
-
-def build_telegram_message_chunks(
-    rows: list[dict[str, Any]],
-    selected_symbols: Iterable[str],
-    config: dict[str, Any],
-) -> list[str]:
-    """Format the selected screener rows into Telegram-sized message chunks."""
-    selected_frame = build_selected_screener_dataframe(rows, selected_symbols)
-    header_text = _build_message_header(config, len(selected_frame))
-    if selected_frame.empty:
-        return [f"{header_text}\n\nBelum ada saham yang diceklis."]
-
-    chunks: list[str] = []
-    current_chunk = header_text
-    for _, row in selected_frame.iterrows():
-        stock_block = _build_stock_block(row)
-        separator = "\n\n" if current_chunk else ""
-        if len(current_chunk) + len(separator) + len(stock_block) > TELEGRAM_MESSAGE_MAX_LENGTH:
-            chunks.append(current_chunk)
-            current_chunk = f"{header_text}\n\n{stock_block}"
-        else:
-            current_chunk = f"{current_chunk}{separator}{stock_block}"
-
-    if current_chunk:
-        chunks.append(current_chunk)
-    return chunks
 
 
 def send_telegram_text(bot_token: str, group_id: str, text: str) -> None:
@@ -192,6 +169,262 @@ def send_telegram_text(bot_token: str, group_id: str, text: str) -> None:
     ).read()
 
 
+def _format_telegram_datetime(value: Any) -> str:
+    """Format one user-facing Telegram timestamp like 2-April-2026 10:35:12."""
+    if isinstance(value, pd.Timestamp):
+        timestamp = value.to_pydatetime()
+    elif isinstance(value, datetime):
+        timestamp = value
+    else:
+        raw_text = str(value or "").strip()
+        if not raw_text:
+            return "-"
+        try:
+            timestamp = pd.Timestamp(raw_text).to_pydatetime()
+        except Exception:
+            return raw_text
+
+    month_name = INDONESIAN_MONTH_NAMES.get(int(timestamp.month), f"{timestamp.month:02d}")
+    return f"{timestamp.day}-{month_name}-{timestamp.year} {timestamp.strftime('%H:%M:%S')}"
+
+
+def load_runtime_state() -> dict[str, Any]:
+    """Load one compact runtime state used to deduplicate live alerts."""
+    if not TELEGRAM_RUNTIME_STATE_PATH.exists():
+        return {"startup_main_sent": False, "sent_event_ids": [], "cycle_count": 0}
+
+    try:
+        payload = json.loads(TELEGRAM_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"startup_main_sent": False, "sent_event_ids": [], "cycle_count": 0}
+
+    sent_event_ids = [
+        str(event_id).strip()
+        for event_id in payload.get("sent_event_ids", [])
+        if str(event_id).strip()
+    ]
+    return {
+        "startup_main_sent": bool(payload.get("startup_main_sent", False)),
+        "sent_event_ids": sent_event_ids[-TELEGRAM_RUNTIME_EVENT_LIMIT:],
+        "cycle_count": max(int(payload.get("cycle_count", 0) or 0), 0),
+        "last_cycle_at": str(payload.get("last_cycle_at", "")).strip(),
+    }
+
+
+def save_runtime_state(state: dict[str, Any]) -> None:
+    """Persist one compact runtime state for the detached worker."""
+    ensure_runtime_dir()
+    normalized_ids: list[str] = []
+    for event_id in state.get("sent_event_ids", []):
+        cleaned_id = str(event_id).strip()
+        if cleaned_id and cleaned_id not in normalized_ids:
+            normalized_ids.append(cleaned_id)
+    payload = {
+        "startup_main_sent": bool(state.get("startup_main_sent", False)),
+        "sent_event_ids": normalized_ids[-TELEGRAM_RUNTIME_EVENT_LIMIT:],
+        "cycle_count": max(int(state.get("cycle_count", 0) or 0), 0),
+        "last_cycle_at": str(state.get("last_cycle_at", "")).strip(),
+    }
+    TELEGRAM_RUNTIME_STATE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def clear_runtime_state() -> None:
+    """Remove the runtime state file when it exists."""
+    try:
+        TELEGRAM_RUNTIME_STATE_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _format_stock_rows(row: dict[str, Any]) -> list[str]:
+    return [
+        f"Kode Saham: {row.get('symbol') or '-'}",
+        f"Harga Sekarang: {row.get('current_price_text') or '-'}",
+        f"Price Change: {row.get('price_change_text') or '-'}",
+        f"Jumlah Trade: {row.get('total_trades_text') or '-'}",
+        f"Laba Bersih: {row.get('net_profit_text') or '-'}",
+        f"Win Rate Backtest EMA: {row.get('win_rate_text') or '-'}",
+    ]
+
+
+def _iter_visible_note_boxes(note_payload: dict[str, Any] | None, action: str | None = None) -> Iterable[dict[str, Any]]:
+    if not note_payload:
+        return []
+    normalized_action = str(action or "").strip().upper()
+    for box in note_payload.get("boxes", []):
+        label = str(box.get("label", "")).strip()
+        if normalized_action == "BUY" and label == "Trigger exit":
+            continue
+        if normalized_action == "SELL" and label == "Trigger entry":
+            continue
+        yield dict(box)
+
+
+def _build_note_box_lines(note_payload: dict[str, Any] | None, action: str | None = None) -> list[str]:
+    lines: list[str] = []
+    for box in _iter_visible_note_boxes(note_payload, action):
+        label = str(box.get("label", "")).strip()
+        value = str(box.get("value", "")).strip()
+        detail_lines = [
+            str(detail_line).strip()
+            for detail_line in box.get("detail_lines", [])
+            if str(detail_line).strip()
+        ]
+        if not label and not value and not detail_lines:
+            continue
+
+        if label:
+            lines.append(f"{label}:")
+        if value:
+            lines.append(f"- {value}")
+        lines.extend(f"- {detail_line}" for detail_line in detail_lines)
+        lines.append("")
+
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _build_log_stock_block(signal_snapshot: dict[str, Any]) -> str:
+    row = dict(signal_snapshot.get("row") or {})
+    symbol = str(row.get("symbol") or signal_snapshot.get("symbol") or "-").strip().upper()
+    current_price_text = str(row.get("current_price_text") or "-").strip()
+    price_change_text = str(row.get("price_change_text") or "-").strip()
+    error_text = str(signal_snapshot.get("error", "") or "").strip()
+
+    lines = [f"*** {symbol} | {current_price_text} | {price_change_text} ***", ""]
+    if error_text:
+        lines.append(f"Error data: {error_text}")
+        return "\n".join(lines)
+
+    note_payload = signal_snapshot.get("note_payload") or {}
+    summary_text = str(note_payload.get("summary_text", "")).strip()
+    if summary_text:
+        lines.extend([summary_text, ""])
+    lines.extend(_build_note_box_lines(note_payload))
+    return "\n".join(lines)
+
+
+def build_startup_message_text(config: dict[str, Any]) -> str:
+    """Build one immediate confirmation message sent when the worker starts."""
+    selected_symbols = [
+        str(symbol).strip().upper()
+        for symbol in config.get("selected_symbols", [])
+        if str(symbol).strip()
+    ]
+    timestamp_text = _format_telegram_datetime(datetime.now())
+    interval_seconds = int(config.get("interval_seconds", TELEGRAM_SEND_INTERVAL_SECONDS))
+    monitored_symbols = ", ".join(f"*** {symbol} ***" for symbol in selected_symbols) if selected_symbols else "-"
+    return "\n".join(
+        [
+            f"Screener EMA {int(config['ema_period'])} Aktif",
+            f"Waktu: {timestamp_text}",
+            f"Screening: tiap {interval_seconds // 60} menit",
+            f"Interval chart: {config['interval_label']}",
+            (
+                f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
+                f"Exit: {option_label(str(config['exit_mode']))}"
+            ),
+            "Status awal: worker siap kirim alert BUY/SELL baru sesuai flow backtest BREAK_EMA.",
+            "",
+            f"Saham dipantau ({len(selected_symbols)}): {monitored_symbols}",
+        ]
+    )
+
+
+def build_signal_message_text(
+    signal_snapshot: dict[str, Any],
+    event: dict[str, Any],
+    config: dict[str, Any],
+) -> str:
+    """Build one detailed BUY/SELL Telegram message for the selected stock."""
+    action = str(event["action"]).strip().upper()
+    row = signal_snapshot["row"]
+    note_payload = signal_snapshot.get("note_payload") or {}
+    summary_text = str(note_payload.get("summary_text", "")).strip()
+    symbol = str(row.get("symbol") or signal_snapshot.get("symbol") or "-").strip().upper()
+    current_price_text = str(row.get("current_price_text") or "-").strip()
+    price_change_text = str(row.get("price_change_text") or "-").strip()
+    lines = [
+        f"SINYAL {action} EMA {int(config['ema_period'])}",
+        f"Waktu Event: {_format_telegram_datetime(event.get('time') or event.get('time_text'))}",
+        f"Interval chart: {config['interval_label']}",
+        (
+            f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
+            f"Exit: {option_label(str(config['exit_mode']))}"
+        ),
+        "",
+        f"*** {symbol} | {current_price_text} | {price_change_text} ***",
+        "",
+        "Backtest:",
+        f"- Jumlah Trade: {row.get('total_trades_text') or '-'}",
+        f"- Laba Bersih: {row.get('net_profit_text') or '-'}",
+        f"- Win Rate: {row.get('win_rate_text') or '-'}",
+    ]
+    note_box_lines = _build_note_box_lines(note_payload, action)
+    if summary_text or note_box_lines:
+        lines.extend(["", "Keterangan:", ""])
+        if summary_text:
+            lines.extend([summary_text, ""])
+        lines.extend(note_box_lines)
+    return "\n".join(lines)
+
+
+def build_screening_log_text(
+    config: dict[str, Any],
+    signal_snapshots: list[dict[str, Any]],
+    *,
+    is_startup_cycle: bool,
+    cycle_count: int = 0,
+) -> str:
+    """Build one cycle log header sent to the dedicated screening log group."""
+    timestamp_text = _format_telegram_datetime(datetime.now())
+    lines = [
+        f"Waktu Cycle: {timestamp_text}",
+        f"Status Cycle: {'Startup' if is_startup_cycle else f'{max(int(cycle_count), 1)} X'}",
+        "",
+        f"Interval chart: {config['interval_label']}",
+        (
+            f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
+            f"Exit: {option_label(str(config['exit_mode']))}"
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def build_screening_log_chunks(
+    config: dict[str, Any],
+    signal_snapshots: list[dict[str, Any]],
+    *,
+    is_startup_cycle: bool,
+    cycle_count: int = 0,
+) -> list[str]:
+    """Split one detailed screening log into Telegram-safe chunks."""
+    header_text = build_screening_log_text(
+        config,
+        signal_snapshots,
+        is_startup_cycle=is_startup_cycle,
+        cycle_count=cycle_count,
+    )
+    stock_blocks = [_build_log_stock_block(snapshot) for snapshot in signal_snapshots]
+    if not stock_blocks:
+        return [header_text]
+
+    chunks: list[str] = []
+    current_chunk = header_text
+    for index, stock_block in enumerate(stock_blocks):
+        separator = "\n\n----------\n\n" if index > 0 else "\n\n"
+        if len(current_chunk) + len(separator) + len(stock_block) > TELEGRAM_MESSAGE_MAX_LENGTH:
+            chunks.append(current_chunk)
+            current_chunk = f"{header_text}\n\n{stock_block}"
+        else:
+            current_chunk = f"{current_chunk}{separator}{stock_block}"
+
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
 def worker_state() -> dict[str, Any] | None:
     """Load one active worker-state file when the process is still alive."""
     if not TELEGRAM_WORKER_STATE_PATH.exists():
@@ -210,7 +443,8 @@ def worker_state() -> dict[str, Any] | None:
 
 
 def clear_worker_state() -> None:
-    """Remove the saved worker-state file when it exists."""
+    """Remove the saved worker-state and runtime files when they exist."""
+    clear_runtime_state()
     try:
         TELEGRAM_WORKER_STATE_PATH.unlink(missing_ok=True)
     except OSError:
@@ -248,14 +482,14 @@ def start_telegram_worker(
     *,
     selected_symbols: Iterable[str],
     interval_label: str,
-    period_label: str,
     ema_period: int,
     breakdown_confirm_mode: str,
     exit_mode: str,
 ) -> dict[str, Any]:
-    """Start one detached worker process that sends the selected screener rows every 30 seconds."""
+    """Start one detached worker process that checks fresh BUY/SELL signals every 5 minutes."""
     ensure_runtime_dir()
     stop_telegram_worker()
+    clear_runtime_state()
 
     normalized_symbols = [
         str(symbol).strip().upper()
@@ -270,8 +504,6 @@ def start_telegram_worker(
         ",".join(normalized_symbols),
         "--interval-label",
         str(interval_label),
-        "--period-label",
-        str(period_label),
         "--ema-period",
         str(int(ema_period)),
         "--breakdown-confirm-mode",
@@ -294,7 +526,6 @@ def start_telegram_worker(
         "pid": process.pid,
         "selected_symbols": normalized_symbols,
         "interval_label": str(interval_label),
-        "period_label": str(period_label),
         "ema_period": int(ema_period),
         "breakdown_confirm_mode": str(breakdown_confirm_mode),
         "exit_mode": str(exit_mode),
@@ -305,31 +536,77 @@ def start_telegram_worker(
     return state
 
 
-def run_worker_cycle(config: dict[str, Any]) -> None:
-    """Build the latest screener data and send it to Telegram for one cycle."""
-    bot_token, group_id = load_telegram_credentials()
-    if not bot_token or not group_id:
+def run_worker_cycle(config: dict[str, Any]) -> dict[str, Any]:
+    """Scan the selected symbols, send fresh alerts, and write one screening log entry."""
+    settings = load_telegram_settings()
+    bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
+    alert_group_id = str(settings.get("TELEGRAM_GROUP_ID", "")).strip()
+    log_group_id = str(settings.get("TELEGRAM_GROUP_LOG_ID", "")).strip()
+    if not bot_token or not alert_group_id or not log_group_id:
         raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN atau TELEGRAM_GROUP_ID belum tersedia di Streamlit secrets, environment variable, atau .env."
+            "TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_ID, dan TELEGRAM_GROUP_LOG_ID wajib tersedia di Streamlit secrets, environment variable, atau .env."
         )
 
-    rows = build_ema_screener_rows(
+    runtime_state = load_runtime_state()
+    is_startup_cycle = not bool(runtime_state.get("startup_main_sent", False))
+    if is_startup_cycle:
+        send_telegram_text(bot_token, alert_group_id, build_startup_message_text(config))
+        runtime_state["startup_main_sent"] = True
+        log_cycle_count = 0
+    else:
+        log_cycle_count = max(int(runtime_state.get("cycle_count", 0) or 0), 0) + 1
+
+    signal_snapshots = build_break_ema_signal_snapshots(
+        config["selected_symbols"],
         interval_label=str(config["interval_label"]),
-        period_label=str(config["period_label"]),
         ema_period=int(config["ema_period"]),
         breakdown_confirm_mode=str(config["breakdown_confirm_mode"]),
         exit_mode=str(config["exit_mode"]),
     )
-    for message_chunk in build_telegram_message_chunks(rows, config["selected_symbols"], config):
-        send_telegram_text(bot_token, group_id, message_chunk)
+    sent_event_ids = {
+        str(event_id).strip()
+        for event_id in runtime_state.get("sent_event_ids", [])
+        if str(event_id).strip()
+    }
+    new_events: list[dict[str, Any]] = []
+    for snapshot in signal_snapshots:
+        for event in snapshot.get("fresh_events", []):
+            event_id = str(event.get("event_id", "")).strip()
+            if not event_id or event_id in sent_event_ids:
+                continue
+            send_telegram_text(bot_token, alert_group_id, build_signal_message_text(snapshot, event, config))
+            sent_event_ids.add(event_id)
+            new_events.append(event)
+
+    for log_chunk in build_screening_log_chunks(
+        config,
+        signal_snapshots,
+        is_startup_cycle=is_startup_cycle,
+        cycle_count=log_cycle_count,
+    ):
+        send_telegram_text(bot_token, log_group_id, log_chunk)
+    runtime_state["sent_event_ids"] = list(sent_event_ids)
+    runtime_state["cycle_count"] = log_cycle_count
+    runtime_state["last_cycle_at"] = datetime.now().isoformat(timespec="seconds")
+    save_runtime_state(runtime_state)
+    return {
+        "startup_cycle": is_startup_cycle,
+        "cycle_count": log_cycle_count,
+        "signals_sent": len(new_events),
+        "selected_symbols": len(signal_snapshots),
+    }
 
 
 __all__ = [
     "TELEGRAM_SEND_INTERVAL_SECONDS",
     "build_selected_screener_dataframe",
-    "build_telegram_message_chunks",
+    "build_screening_log_text",
+    "build_screening_log_chunks",
+    "build_signal_message_text",
+    "build_startup_message_text",
     "clear_worker_state",
     "load_telegram_credentials",
+    "load_telegram_group_log_id",
     "load_telegram_settings",
     "run_worker_cycle",
     "start_telegram_worker",

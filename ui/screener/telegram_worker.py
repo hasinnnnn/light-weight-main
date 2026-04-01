@@ -12,7 +12,6 @@ def _parse_args() -> dict[str, Any]:
     parser = argparse.ArgumentParser(description="Telegram worker for the EMA screener.")
     parser.add_argument("--selected-symbols", required=True)
     parser.add_argument("--interval-label", required=True)
-    parser.add_argument("--period-label", required=True)
     parser.add_argument("--ema-period", required=True, type=int)
     parser.add_argument("--breakdown-confirm-mode", required=True)
     parser.add_argument("--exit-mode", required=True)
@@ -24,10 +23,10 @@ def _parse_args() -> dict[str, Any]:
             if symbol.strip()
         ],
         "interval_label": str(parsed.interval_label),
-        "period_label": str(parsed.period_label),
         "ema_period": int(parsed.ema_period),
         "breakdown_confirm_mode": str(parsed.breakdown_confirm_mode),
         "exit_mode": str(parsed.exit_mode),
+        "interval_seconds": TELEGRAM_SEND_INTERVAL_SECONDS,
     }
 
 
