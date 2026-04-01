@@ -109,14 +109,8 @@ def _render_overlay_indicator(
             method="ema" if indicator_key == "EMA" else "ma",
             label="EMA" if indicator_key == "EMA" else "SMA",
         )
-        for marker in pullback_markers:
-            chart.marker(
-                time=marker["time"],
-                position=marker["position"],
-                shape=marker["shape"],
-                color=marker["color"],
-                text=marker["text"],
-            )
+        if pullback_markers:
+            rendered_lines[0].marker_list(pullback_markers)
 
     if indicator_key in {"EMA_CROSS", "MA_CROSS"} and len(rendered_lines) >= 1:
         params = _indicator_params(indicator)

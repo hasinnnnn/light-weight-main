@@ -73,6 +73,7 @@ class BacktestPreviewOverlayTests(unittest.TestCase):
 
         chart.marker.assert_not_called()
         line.set.assert_called_once()
+        line.marker_list.assert_not_called()
 
     def test_regular_ema_indicator_keeps_trade_markers(self) -> None:
         chart = Mock()
@@ -94,8 +95,8 @@ class BacktestPreviewOverlayTests(unittest.TestCase):
                 },
             )
 
-        chart.marker.assert_called_once()
-        self.assertEqual(chart.marker.call_args.kwargs["text"], "BUY EMA")
+        chart.marker.assert_not_called()
+        line.marker_list.assert_called_once_with(self._marker_payload())
 
 
 if __name__ == "__main__":
