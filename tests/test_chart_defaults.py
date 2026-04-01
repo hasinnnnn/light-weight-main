@@ -34,6 +34,8 @@ class ChartDefaultTests(unittest.TestCase):
         self.assertEqual(st.session_state.symbol_input, "BUMI")
         self.assertEqual(st.session_state.current_app_page, "chart")
         self.assertEqual(st.session_state.screener_ema_period, 10)
+        self.assertEqual(st.session_state.screener_breakdown_confirm_mode, "body_breakdown")
+        self.assertEqual(st.session_state.screener_exit_mode, "ema_breakdown")
         self.assertEqual(st.session_state.screener_interval_label, "1 hari")
         self.assertEqual(st.session_state.screener_period_label, "YTD")
         self.assertEqual(st.session_state.screener_selected_symbols, [])

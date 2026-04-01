@@ -31,6 +31,10 @@ class ScreenerPageTests(unittest.TestCase):
                 "current_price_text": "132",
                 "price_change_pct": 5.61,
                 "price_change_text": "8 (+5.61%)",
+                "total_trades": 12,
+                "total_trades_text": "12",
+                "net_profit": 1525000.0,
+                "net_profit_text": "+Rp 1.525.000,00",
                 "win_rate_pct": 58.25,
                 "win_rate_text": "58.25%",
                 "error": "",
@@ -42,6 +46,10 @@ class ScreenerPageTests(unittest.TestCase):
                 "current_price_text": "1,930",
                 "price_change_pct": 1.35,
                 "price_change_text": "26 (+1.35%)",
+                "total_trades": 9,
+                "total_trades_text": "9",
+                "net_profit": 275000.0,
+                "net_profit_text": "+Rp 275.000,00",
                 "win_rate_pct": 58.25,
                 "win_rate_text": "58.25%",
                 "error": "",
@@ -53,6 +61,10 @@ class ScreenerPageTests(unittest.TestCase):
                 "current_price_text": "456",
                 "price_change_pct": -2.10,
                 "price_change_text": "10 (-2.10%)",
+                "total_trades": 7,
+                "total_trades_text": "7",
+                "net_profit": -315000.0,
+                "net_profit_text": "-Rp 315.000,00",
                 "win_rate_pct": 41.10,
                 "win_rate_text": "41.10%",
                 "error": "",
@@ -61,12 +73,14 @@ class ScreenerPageTests(unittest.TestCase):
         frame = build_screener_table_dataframe(sample_rows, selected_symbols=["MEDC"])
         self.assertEqual(
             frame.columns.tolist(),
-            ["Pilih", "Kode Saham", "Harga Sekarang", "Price Change", "Win Rate Backtest EMA"],
+            ["Pilih", "Kode Saham", "Harga Sekarang", "Price Change", "Jumlah Trade", "Laba Bersih", "Win Rate Backtest EMA"],
         )
         self.assertEqual(frame.iloc[0]["Kode Saham"], "BUMI")
         self.assertEqual(frame.iloc[1]["Kode Saham"], "MEDC")
         self.assertEqual(frame.iloc[2]["Kode Saham"], "DEWA")
         self.assertEqual(frame.iloc[0]["Price Change"], "8 (+5.61%)")
+        self.assertEqual(frame.iloc[0]["Jumlah Trade"], "12")
+        self.assertEqual(frame.iloc[2]["Laba Bersih"], "-Rp 315.000,00")
         self.assertTrue(bool(frame.iloc[1]["Pilih"]))
         self.assertFalse(bool(frame.iloc[0]["Pilih"]))
         self.assertEqual(build_screener_symbol_list(sample_rows), ["BUMI", "MEDC", "DEWA"])
@@ -79,6 +93,8 @@ class ScreenerPageTests(unittest.TestCase):
                     "current_price_text": "132",
                     "price_change_pct": 5.61,
                     "price_change_text": "8 (+5.61%)",
+                    "total_trades_text": "12",
+                    "net_profit_text": "+Rp 1.525.000,00",
                     "win_rate_pct": 58.25,
                     "win_rate_text": "58.25%",
                 },
@@ -87,6 +103,8 @@ class ScreenerPageTests(unittest.TestCase):
                     "current_price_text": "456",
                     "price_change_pct": -2.10,
                     "price_change_text": "10 (-2.10%)",
+                    "total_trades_text": "7",
+                    "net_profit_text": "-Rp 315.000,00",
                     "win_rate_pct": 41.10,
                     "win_rate_text": "41.10%",
                 },
@@ -97,6 +115,7 @@ class ScreenerPageTests(unittest.TestCase):
         self.assertIn("color: #f87171", html)
         self.assertIn("text-align: center", html)
         self.assertIn("padding-left: 0.45rem", html)
+        self.assertIn("+Rp 1.525.000,00", html)
 
     def test_selected_symbols_summary_html_is_centered_and_wrapping(self) -> None:
         html = build_selected_symbols_summary_html(["BUMI", "MEDC", "DEWA", "ELSA"])
@@ -121,6 +140,8 @@ class ScreenerPageTests(unittest.TestCase):
                 "symbol": "BUMI",
                 "current_price_text": "132",
                 "price_change_text": "8 (+5.61%)",
+                "total_trades_text": "12",
+                "net_profit_text": "+Rp 1.525.000,00",
                 "win_rate_text": "58.25%",
                 "price_change_pct": 5.61,
             },
@@ -128,6 +149,8 @@ class ScreenerPageTests(unittest.TestCase):
                 "symbol": "MEDC",
                 "current_price_text": "1,930",
                 "price_change_text": "26 (+1.35%)",
+                "total_trades_text": "9",
+                "net_profit_text": "+Rp 275.000,00",
                 "win_rate_text": "66.67%",
                 "price_change_pct": 1.35,
             },

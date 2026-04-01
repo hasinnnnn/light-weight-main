@@ -62,6 +62,21 @@ def build_fibonacci_section(result: Any, params: dict[str, Any], colors: dict[st
         )
         for level in summary["levels"]
     ]
+    fibonacci_boxes.append(
+        build_indicator_note_info_box_html(
+            label="Trigger exit",
+            value=(
+                f"Waspadai exit dekat {summary['nearest_level_label']}"
+                if summary["nearest_level_label"]
+                else "Waspadai exit di resistance terdekat"
+            ),
+            color="#ef4444",
+            detail_lines=[
+                "Exit bertahap masuk akal saat harga mendekati level resistance Fibonacci berikutnya.",
+                "Kalau harga gagal bertahan di atas level retracement penting, setup biasanya mulai melemah.",
+            ],
+        )
+    )
     return build_indicator_note_section_html(
         title="Fibonacci",
         summary_text=(

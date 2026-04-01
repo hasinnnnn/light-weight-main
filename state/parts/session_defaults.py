@@ -49,6 +49,8 @@ def _default_session_state_values() -> dict[str, Any]:
         "backtest_parameter_modal_open": False,
         "backtest_last_error": "",
         "screener_ema_period": 10,
+        "screener_breakdown_confirm_mode": "body_breakdown",
+        "screener_exit_mode": "ema_breakdown",
         "screener_interval_label": "1 hari",
         "screener_period_label": "YTD",
         "screener_selected_symbols": [],

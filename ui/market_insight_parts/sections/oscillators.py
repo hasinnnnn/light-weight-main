@@ -77,6 +77,32 @@ def _build_rsi_signal_text(current_value: float, previous_value: float | None) -
     )
 
 
+def _build_rsi_exit_text(current_value: float, previous_value: float | None) -> tuple[str, str, list[str]]:
+    if previous_value is None:
+        return (
+            "Trigger exit RSI belum terbaca",
+            "neutral",
+            ["Minimal butuh dua titik RSI valid untuk membaca momentum exit."],
+        )
+    if previous_value > 70 >= current_value:
+        return (
+            "Exit RSI terpicu dari overbought",
+            "negative",
+            ["RSI baru turun kembali ke bawah 70, momentum naik mulai melemah."],
+        )
+    if current_value >= 70:
+        return (
+            "Waspadai exit, RSI terlalu tinggi",
+            "negative",
+            ["RSI sudah masuk area overbought. Exit makin valid kalau berikutnya turun lagi ke bawah 70."],
+        )
+    return (
+        "Belum ada trigger exit RSI",
+        "positive",
+        ["Exit RSI biasanya dikonfirmasi saat indikator gagal bertahan di area kuat lalu melemah dari overbought."],
+    )
+
+
 def build_rsi_section(result: Any, params: dict[str, Any], colors: dict[str, str]) -> str | None:
     frame = getattr(result, "data", None)
     if frame is None or getattr(frame, "empty", True):
@@ -106,6 +132,7 @@ def build_rsi_section(result: Any, params: dict[str, Any], colors: dict[str, str
     zone_label, zone_tone, zone_detail = _rsi_zone_label(latest_rsi)
     direction_text, direction_tone = _direction_label(latest_rsi, previous_rsi)
     signal_text, signal_tone, signal_details = _build_rsi_signal_text(latest_rsi, previous_rsi)
+    exit_text, exit_tone, exit_details = _build_rsi_exit_text(latest_rsi, previous_rsi)
     distance_to_upper = max(70.0 - latest_rsi, 0.0)
     distance_to_lower = max(latest_rsi - 30.0, 0.0)
 
@@ -150,6 +177,12 @@ def build_rsi_section(result: Any, params: dict[str, Any], colors: dict[str, str
             value=signal_text,
             color=TONE_COLORS[signal_tone],
             detail_lines=signal_details,
+        ),
+        build_indicator_note_info_box_html(
+            label="Trigger exit",
+            value=exit_text,
+            color=TONE_COLORS[exit_tone],
+            detail_lines=exit_details,
         ),
     ]
     return build_indicator_note_section_html(
@@ -229,6 +262,32 @@ def _build_histogram_text(current_histogram: float, previous_histogram: float | 
     )
 
 
+def _build_macd_exit_text(
+    current_macd: float,
+    current_signal: float,
+    previous_macd: float | None,
+    previous_signal: float | None,
+) -> tuple[str, str, list[str]]:
+    if previous_macd is not None and previous_signal is not None:
+        if previous_macd >= previous_signal and current_macd < current_signal:
+            return (
+                "Exit MACD terpicu bearish cross",
+                "negative",
+                ["MACD baru memotong turun signal line. Ini tanda exit yang paling umum dipakai di strategi MACD."],
+            )
+    if current_macd < 0:
+        return (
+            "Waspadai exit, MACD di bawah nol",
+            "negative",
+            ["Momentum menengah sudah bergeser ke area negatif walau cross baru belum selalu muncul."],
+        )
+    return (
+        "Belum ada trigger exit MACD",
+        "positive",
+        ["Selama MACD masih di atas signal line dan belum jatuh di bawah nol, momentum naik masih relatif aman."],
+    )
+
+
 def build_macd_section(result: Any, params: dict[str, Any], colors: dict[str, str]) -> str | None:
     frame = getattr(result, "data", None)
     if frame is None or getattr(frame, "empty", True):
@@ -273,6 +332,12 @@ def build_macd_section(result: Any, params: dict[str, Any], colors: dict[str, st
     histogram_text, histogram_tone, histogram_details = _build_histogram_text(
         latest_histogram,
         previous_histogram,
+    )
+    exit_text, exit_tone, exit_details = _build_macd_exit_text(
+        latest_macd,
+        latest_signal,
+        previous_macd,
+        previous_signal,
     )
     zero_line_text = "MACD di atas nol" if latest_macd >= 0 else "MACD di bawah nol"
     zero_line_tone = "positive" if latest_macd >= 0 else "negative"
@@ -337,6 +402,12 @@ def build_macd_section(result: Any, params: dict[str, Any], colors: dict[str, st
             detail_lines=[
                 "Pembacaan ini menggabungkan posisi MACD terhadap signal line dan histogram saat ini."
             ],
+        ),
+        build_indicator_note_info_box_html(
+            label="Trigger exit",
+            value=exit_text,
+            color=TONE_COLORS[exit_tone],
+            detail_lines=exit_details,
         ),
     ]
     return build_indicator_note_section_html(

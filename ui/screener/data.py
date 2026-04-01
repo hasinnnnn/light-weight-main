@@ -7,6 +7,7 @@ import streamlit as st
 from backtest.config import get_default_backtest_general_params, get_default_break_ema_params
 from backtest.engine import BacktestError, run_backtest
 from data.market_data_service import DataServiceError, load_market_data
+from ui.backtest.sections.result_summary import format_rupiah
 from ui.market_insight_parts.formatters import format_price_change_with_percent, format_price_value
 
 
@@ -70,12 +71,19 @@ def load_ema_screener_row(
     interval_label: str,
     period_label: str,
     ema_period: int,
+    breakdown_confirm_mode: str,
+    exit_mode: str,
 ) -> dict[str, Any]:
     """Load one symbol snapshot and reuse BREAK_EMA backtest logic for the win rate."""
     normalized_symbol = str(symbol or "").strip().upper()
     normalized_interval = str(interval_label or SCREENER_DEFAULT_INTERVAL_LABEL).strip()
     normalized_period = str(period_label or "YTD").strip()
     normalized_ema_period = max(int(ema_period), 1)
+    default_strategy_params = get_default_break_ema_params()
+    normalized_breakdown_confirm_mode = str(
+        breakdown_confirm_mode or default_strategy_params["breakdown_confirm_mode"]
+    ).strip()
+    normalized_exit_mode = str(exit_mode or default_strategy_params["exit_mode"]).strip()
 
     try:
         result = load_market_data(
@@ -91,6 +99,10 @@ def load_ema_screener_row(
             "current_price_text": "-",
             "price_change_pct": None,
             "price_change_text": "-",
+            "total_trades": None,
+            "total_trades_text": "-",
+            "net_profit": None,
+            "net_profit_text": "-",
             "win_rate_pct": None,
             "win_rate_text": "-",
             "error": str(exc),
@@ -106,8 +118,10 @@ def load_ema_screener_row(
         use_integer_price=bool(getattr(result, "uses_bei_price_fractions", False)),
     )
     general_params = get_default_backtest_general_params()
-    strategy_params = get_default_break_ema_params()
+    strategy_params = default_strategy_params.copy()
     strategy_params["ema_period"] = normalized_ema_period
+    strategy_params["breakdown_confirm_mode"] = normalized_breakdown_confirm_mode
+    strategy_params["exit_mode"] = normalized_exit_mode
 
     try:
         backtest_result = run_backtest(
@@ -120,9 +134,17 @@ def load_ema_screener_row(
             period_label=normalized_period,
             use_lot_sizing=result.uses_bei_price_fractions,
         )
+        total_trades = int(backtest_result.metrics.total_trades)
+        total_trades_text = str(total_trades)
+        net_profit = float(backtest_result.metrics.net_profit)
+        net_profit_text = format_rupiah(net_profit, show_sign=True)
         win_rate_pct = float(backtest_result.metrics.win_rate_pct)
         win_rate_text = f"{win_rate_pct:.2f}%"
     except BacktestError as exc:
+        total_trades = None
+        total_trades_text = "-"
+        net_profit = None
+        net_profit_text = "-"
         win_rate_pct = None
         win_rate_text = "-"
         return {
@@ -132,6 +154,10 @@ def load_ema_screener_row(
             "current_price_text": current_price_text,
             "price_change_pct": price_change_pct,
             "price_change_text": price_change_text,
+            "total_trades": total_trades,
+            "total_trades_text": total_trades_text,
+            "net_profit": net_profit,
+            "net_profit_text": net_profit_text,
             "win_rate_pct": win_rate_pct,
             "win_rate_text": win_rate_text,
             "error": str(exc),
@@ -144,6 +170,10 @@ def load_ema_screener_row(
         "current_price_text": current_price_text,
         "price_change_pct": price_change_pct,
         "price_change_text": price_change_text,
+        "total_trades": total_trades,
+        "total_trades_text": total_trades_text,
+        "net_profit": net_profit,
+        "net_profit_text": net_profit_text,
         "win_rate_pct": win_rate_pct,
         "win_rate_text": win_rate_text,
         "error": "",
@@ -154,11 +184,20 @@ def build_ema_screener_rows(
     interval_label: str,
     period_label: str,
     ema_period: int,
+    breakdown_confirm_mode: str,
+    exit_mode: str,
 ) -> list[dict[str, Any]]:
     """Build the displayed screener rows for the current controls."""
     rows: list[dict[str, Any]] = []
     for index, symbol in enumerate(SCREENER_EMA_SYMBOLS, start=1):
-        row = load_ema_screener_row(symbol, interval_label, period_label, ema_period)
+        row = load_ema_screener_row(
+            symbol,
+            interval_label,
+            period_label,
+            ema_period,
+            breakdown_confirm_mode,
+            exit_mode,
+        )
         rows.append(
             {
                 "no": index,
@@ -168,6 +207,10 @@ def build_ema_screener_rows(
                 "current_price_text": row["current_price_text"],
                 "price_change_pct": row["price_change_pct"],
                 "price_change_text": row["price_change_text"],
+                "total_trades": row["total_trades"],
+                "total_trades_text": row["total_trades_text"],
+                "net_profit": row["net_profit"],
+                "net_profit_text": row["net_profit_text"],
                 "win_rate_pct": row["win_rate_pct"],
                 "win_rate_text": row["win_rate_text"],
                 "error": row.get("error", ""),

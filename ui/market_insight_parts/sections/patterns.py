@@ -61,6 +61,12 @@ def build_candle_pattern_section(result: Any, params: dict[str, Any], colors: di
                     color=bearish_color,
                     empty_message="Belum ada pattern bearish.",
                 ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=bearish_color,
+                    empty_message="Trigger exit baru bisa dibaca setelah ada pola lawan arah.",
+                ),
             ],
         )
 
@@ -127,6 +133,24 @@ def build_candle_pattern_section(result: Any, params: dict[str, Any], colors: di
                 ),
                 empty_message="Belum ada pattern netral di range ini.",
             ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value=(
+                    f"Waspadai exit saat muncul {latest_bearish['label']}"
+                    if latest_bearish
+                    else "Belum ada trigger exit candle pattern"
+                ),
+                color=(bearish_color if latest_bearish else neutral_color),
+                detail_lines=(
+                    [
+                        f"Tanggal {latest_bearish['date_label']}",
+                        str(latest_bearish["description"]),
+                        "Pola bearish lawan arah sering dipakai sebagai sinyal ambil untung atau kurangi posisi.",
+                    ]
+                    if latest_bearish
+                    else ["Selama belum ada pola bearish lawan arah, exit candle pattern belum terkonfirmasi."]
+                ),
+            ),
         ],
         extra_html=candle_history_table_html,
     )
@@ -181,6 +205,12 @@ def build_chart_pattern_section(result: Any, params: dict[str, Any], colors: dic
                     value=None,
                     color=bearish_color,
                     empty_message="Belum ada chart pattern bearish.",
+                ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=bearish_color,
+                    empty_message="Trigger exit baru bisa dibaca setelah ada pola bearish atau breakout gagal.",
                 ),
             ],
         )
@@ -254,6 +284,24 @@ def build_chart_pattern_section(result: Any, params: dict[str, Any], colors: dic
                     else None
                 ),
                 empty_message="Belum ada chart pattern netral di range ini.",
+            ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value=(
+                    f"Waspadai exit saat muncul {latest_bearish['label']}"
+                    if latest_bearish
+                    else "Belum ada trigger exit chart pattern"
+                ),
+                color=(bearish_color if latest_bearish else neutral_color),
+                detail_lines=(
+                    [
+                        f"Tanggal {latest_bearish['date_label']}",
+                        str(latest_bearish["description"]),
+                        "Chart pattern bearish atau breakout gagal biasanya jadi sinyal keluar yang lebih kuat.",
+                    ]
+                    if latest_bearish
+                    else ["Selama pola lawan arah belum muncul, exit chart pattern belum terkonfirmasi."]
+                ),
             ),
         ],
         extra_html=chart_history_table_html,

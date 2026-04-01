@@ -59,6 +59,12 @@ def build_consolidation_section(result: Any, params: dict[str, Any], colors: dic
                     color=zone_color,
                     empty_message="Belum ada zona konsolidasi yang breakout.",
                 ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=zone_color,
+                    empty_message="Trigger exit konsolidasi baru terbaca setelah breakout gagal atau area bawah jebol.",
+                ),
             ],
         )
 
@@ -137,6 +143,19 @@ def build_consolidation_section(result: Any, params: dict[str, Any], colors: dic
                 color=zone_color,
                 detail_lines=[f"Maks ditampilkan {int(normalized_params['max_zones'])} zona"],
             ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value=(
+                    "Exit saat harga balik masuk area konsolidasi"
+                    if latest_breakout_area is not None
+                    else "Waspadai exit kalau area bawah konsolidasi jebol"
+                ),
+                color=zone_color,
+                detail_lines=[
+                    "Breakout yang gagal dan kembali masuk box biasanya menandakan momentum melemah.",
+                    "Kalau area bawah konsolidasi pecah, setup breakout biasanya dianggap invalid.",
+                ],
+            ),
         ],
     )
 
@@ -170,6 +189,12 @@ def build_trendline_section(result: Any, params: dict[str, Any], colors: dict[st
                     color=trendline_color,
                     empty_message="Status breakout atau breakdown belum bisa dibaca.",
                 ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=trendline_color,
+                    empty_message="Trigger exit trendline muncul saat candle close breakdown dari area support trendline.",
+                ),
             ],
         )
 
@@ -188,12 +213,23 @@ def build_trendline_section(result: Any, params: dict[str, Any], colors: dict[st
             f"{int(summary_bundle['pivot_window'])}. Ditampilkan maksimal {int(summary_bundle['max_trendlines'])} trendline. "
             "Break valid dihitung dari candle close yang menutup di luar trendline, bukan cuma wick menyentuh garis."
         ),
-        boxes_html=_build_trendline_boxes(
-            trendlines=trendlines,
-            colors=colors,
-            label_prefix="Trendline",
-            major=False,
-        ),
+        boxes_html=[
+            *_build_trendline_boxes(
+                trendlines=trendlines,
+                colors=colors,
+                label_prefix="Trendline",
+                major=False,
+            ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value="Exit saat support trendline breakdown",
+                color=colors.get("down", "#ef4444"),
+                detail_lines=[
+                    "Candle close yang menutup valid di bawah trendline support sering dipakai sebagai trigger keluar.",
+                    "Kalau trendline yang dipegang berperan sebagai resistance, exit makin relevan saat harga ditolak lagi dari area itu.",
+                ],
+            ),
+        ],
     )
 
 
@@ -227,6 +263,12 @@ def build_major_trendline_section(result: Any, params: dict[str, Any], colors: d
                     color=major_trend_color,
                     empty_message="Status breakout atau breakdown major trend belum bisa dibaca.",
                 ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=major_trend_color,
+                    empty_message="Trigger exit major trend muncul saat harga close breakdown dari trendline utama.",
+                ),
             ],
         )
 
@@ -246,12 +288,23 @@ def build_major_trendline_section(result: Any, params: dict[str, Any], colors: d
             f"dan maksimal {int(summary_bundle['max_trendlines'])} trendline. "
             "Break valid dihitung dari candle close yang menutup di luar trendline, bukan cuma wick menyentuh garis."
         ),
-        boxes_html=_build_trendline_boxes(
-            trendlines=trendlines,
-            colors=colors,
-            label_prefix="Major Trend",
-            major=True,
-        ),
+        boxes_html=[
+            *_build_trendline_boxes(
+                trendlines=trendlines,
+                colors=colors,
+                label_prefix="Major Trend",
+                major=True,
+            ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value="Exit saat major trendline breakdown",
+                color=colors.get("down", "#ef4444"),
+                detail_lines=[
+                    "Kalau candle close valid di bawah major trendline support, bias naik menengah biasanya ikut rusak.",
+                    "Semakin besar timeframe analisisnya, sinyal exit ini biasanya makin penting.",
+                ],
+            ),
+        ],
     )
 
 
@@ -283,6 +336,12 @@ def build_nearest_support_resistance_section(result: Any, params: dict[str, Any]
                     color=colors.get("resistance", "#22c55e"),
                     current_price=float(result.current_price),
                     empty_message="Belum ada area resistance terdekat yang valid.",
+                ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=colors.get("resistance", "#22c55e"),
+                    empty_message="Trigger exit biasanya muncul saat harga mendekati resistance atau support jebol.",
                 ),
             ],
         )
@@ -323,6 +382,19 @@ def build_nearest_support_resistance_section(result: Any, params: dict[str, Any]
                 empty_message="Belum ada area resistance terdekat yang valid.",
                 detail_lines=([f"Pantulan {int(resistance['bounces'])}"] if resistance is not None else None),
             ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value=(
+                    f"Pertimbangkan exit dekat resistance {format_price_value(float(resistance['price']))}"
+                    if resistance is not None
+                    else "Waspadai exit kalau support terdekat jebol"
+                ),
+                color=colors.get("resistance", "#22c55e"),
+                detail_lines=[
+                    "Resistance terdekat sering jadi area ambil untung pertama.",
+                    "Kalau support terdekat gagal bertahan, exit defensif biasanya lebih aman.",
+                ],
+            ),
         ],
     )
 
@@ -357,6 +429,12 @@ def build_strong_support_resistance_section(result: Any, params: dict[str, Any],
                     color=colors.get("resistance", "#22c55e"),
                     current_price=float(result.current_price),
                     empty_message="Belum ada area resistance kuat yang lolos kriteria.",
+                ),
+                build_indicator_note_info_box_html(
+                    label="Trigger exit",
+                    value=None,
+                    color=colors.get("resistance", "#22c55e"),
+                    empty_message="Trigger exit kuat biasanya muncul saat harga ditolak resistance kuat atau support kuat breakdown.",
                 ),
             ],
         )
@@ -419,6 +497,19 @@ def build_strong_support_resistance_section(result: Any, params: dict[str, Any],
                     if resistance is not None
                     else None
                 ),
+            ),
+            build_indicator_note_info_box_html(
+                label="Trigger exit",
+                value=(
+                    f"Prioritaskan exit di sekitar resistance kuat {format_price_value(float(resistance['price']))}"
+                    if resistance is not None
+                    else "Waspadai exit kalau support kuat breakdown"
+                ),
+                color=colors.get("resistance", "#22c55e"),
+                detail_lines=[
+                    "Area resistance kuat biasanya lebih layak jadi target ambil untung dibanding resistance minor.",
+                    "Kalau support kuat jebol dengan volume besar, exit defensif makin relevan.",
+                ],
             ),
         ],
     )

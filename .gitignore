@@ -21,6 +21,9 @@ htmlcov/
 
 # Streamlit local secrets
 .streamlit/secrets.toml
+.env
+.env.*
+.runtime/
 
 # Editor / OS files
 .vscode/

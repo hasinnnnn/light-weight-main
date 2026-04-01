@@ -17,6 +17,8 @@ SCREENER_TABLE_TEXT_COLUMNS = [
     "Kode Saham",
     "Harga Sekarang",
     "Price Change",
+    "Jumlah Trade",
+    "Laba Bersih",
     "Win Rate Backtest EMA",
 ]
 
@@ -65,6 +67,8 @@ def build_screener_table_dataframe(
                 "Kode Saham": symbol or "-",
                 "Harga Sekarang": row.get("current_price_text") or "-",
                 "Price Change": row.get("price_change_text") or "-",
+                "Jumlah Trade": row.get("total_trades_text") or "-",
+                "Laba Bersih": row.get("net_profit_text") or "-",
                 "Win Rate Backtest EMA": row.get("win_rate_text") or "-",
             }
         )
@@ -111,6 +115,31 @@ def _style_win_rate_cell(value: Any) -> str:
     return f"color: {SCREENER_NEGATIVE_TONE}; font-weight: 700;"
 
 
+def _parse_currency_text(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text or text in {"-", "—"}:
+        return None
+
+    sign = -1.0 if text.startswith("-") else 1.0
+    normalized_text = text.lstrip("+-").replace("Rp", "").replace(" ", "")
+    normalized_text = normalized_text.replace(".", "").replace(",", ".")
+    try:
+        return sign * float(normalized_text)
+    except ValueError:
+        return None
+
+
+def _style_net_profit_cell(value: Any) -> str:
+    parsed_value = _parse_currency_text(value)
+    if parsed_value is None:
+        return f"color: {SCREENER_NEUTRAL_TONE}; font-weight: 700;"
+    if parsed_value > 0:
+        return f"color: {SCREENER_POSITIVE_TONE}; font-weight: 700;"
+    if parsed_value < 0:
+        return f"color: {SCREENER_NEGATIVE_TONE}; font-weight: 700;"
+    return f"color: {SCREENER_NEUTRAL_TONE}; font-weight: 700;"
+
+
 def build_screener_table_styler(table_frame: pd.DataFrame) -> Any:
     """Build the table styler for non-editable colored columns."""
     return (
@@ -141,6 +170,7 @@ def build_screener_table_styler(table_frame: pd.DataFrame) -> Any:
             overwrite=False,
         )
         .map(_style_price_change_cell, subset=["Price Change"])
+        .map(_style_net_profit_cell, subset=["Laba Bersih"])
         .map(_style_win_rate_cell, subset=["Win Rate Backtest EMA"])
     )
 
@@ -283,12 +313,16 @@ def render_screener_table(
                     "Kode Saham",
                     "Harga Sekarang",
                     "Price Change",
+                    "Jumlah Trade",
+                    "Laba Bersih",
                     "Win Rate Backtest EMA",
                 ],
                 disabled=[
                     "Kode Saham",
                     "Harga Sekarang",
                     "Price Change",
+                    "Jumlah Trade",
+                    "Laba Bersih",
                     "Win Rate Backtest EMA",
                 ],
                 column_config={
@@ -300,6 +334,8 @@ def render_screener_table(
                     "Kode Saham": st.column_config.TextColumn("Kode Saham", width="small"),
                     "Harga Sekarang": st.column_config.TextColumn("Harga Sekarang", width="small"),
                     "Price Change": st.column_config.TextColumn("Price Change", width="medium"),
+                    "Jumlah Trade": st.column_config.TextColumn("Jumlah Trade", width="small"),
+                    "Laba Bersih": st.column_config.TextColumn("Laba Bersih", width="medium"),
                     "Win Rate Backtest EMA": st.column_config.TextColumn("Win Rate Backtest EMA", width="medium"),
                 },
             )

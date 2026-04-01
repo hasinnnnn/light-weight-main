@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import streamlit as st
 
+from backtest.config import BREAK_EMA_CONFIRMATION_MODES, BREAK_EMA_EXIT_MODES, get_default_break_ema_params
 from state.app_state import close_screener_page
 from config.chart_options import INTERVAL_OPTIONS, PERIOD_OPTIONS
 from ui.screener.data import SCREENER_DEFAULT_INTERVAL_LABEL, build_ema_screener_rows
+from ui.backtest.sections.parameter_forms import option_label
 from ui.screener.table import render_screener_table
+from ui.screener.telegram_runner import (
+    TELEGRAM_SEND_INTERVAL_SECONDS,
+    start_telegram_worker,
+    stop_telegram_worker,
+    telegram_credentials_ready,
+    worker_state,
+)
 
 
 def render_screener_page() -> None:
@@ -19,8 +28,9 @@ def render_screener_page() -> None:
     st.title("Screener")
     st.caption("Starter screener EMA. Win rate diambil dari logic backtest EMA yang sama dengan page Backtest.")
 
-    controls_col, interval_col, period_col, action_col = st.columns([1.0, 1.0, 1.1, 0.85])
-    with controls_col:
+    break_ema_defaults = get_default_break_ema_params()
+    ema_col, entry_col, exit_col, interval_col, period_col, action_col = st.columns([1.0, 1.45, 1.45, 1.0, 1.1, 0.85])
+    with ema_col:
         ema_period = int(
             st.number_input(
                 "Panjang EMA",
@@ -28,6 +38,35 @@ def render_screener_page() -> None:
                 step=1,
                 value=int(st.session_state.get("screener_ema_period", 10)),
                 key="screener_ema_period",
+            )
+        )
+    with entry_col:
+        entry_mode = str(
+            st.selectbox(
+                "Mode Entry",
+                BREAK_EMA_CONFIRMATION_MODES,
+                index=BREAK_EMA_CONFIRMATION_MODES.index(
+                    str(
+                        st.session_state.get(
+                            "screener_breakdown_confirm_mode",
+                            break_ema_defaults["breakdown_confirm_mode"],
+                        )
+                    )
+                ),
+                format_func=option_label,
+                key="screener_breakdown_confirm_mode",
+            )
+        )
+    with exit_col:
+        exit_mode = str(
+            st.selectbox(
+                "Mode Exit",
+                BREAK_EMA_EXIT_MODES,
+                index=BREAK_EMA_EXIT_MODES.index(
+                    str(st.session_state.get("screener_exit_mode", break_ema_defaults["exit_mode"]))
+                ),
+                format_func=option_label,
+                key="screener_exit_mode",
             )
         )
     with interval_col:
@@ -55,16 +94,17 @@ def render_screener_page() -> None:
             )
         )
     with action_col:
-        st.button(
+        start_requested = st.button(
             "Screen",
             key="screener_screen_button",
             use_container_width=True,
-            disabled=True,
+            type="primary",
         )
 
     st.caption(
-        "Tombol `Screen` baru disiapkan tampil dulu, logic kliknya belum diaktifkan. "
-        "Data tabel dan win rate backtest EMA langsung mengikuti kombinasi interval dan periode yang dipilih."
+        "Mode entry dan mode exit di screener memakai parameter Break EMA yang sudah ada di backtest. "
+        f"Tombol `Screen` akan menyalakan worker Telegram tiap {TELEGRAM_SEND_INTERVAL_SECONDS} detik "
+        "untuk saham yang sedang diceklis. Data tabel langsung mengikuti kombinasi parameter yang dipilih."
     )
 
     with st.spinner("Menghitung data screener EMA..."):
@@ -72,11 +112,50 @@ def render_screener_page() -> None:
             interval_label=interval_label,
             period_label=period_label,
             ema_period=ema_period,
+            breakdown_confirm_mode=entry_mode,
+            exit_mode=exit_mode,
         )
+
+    selected_symbols = list(st.session_state.get("screener_selected_symbols", []))
+    active_worker = worker_state()
+    if start_requested:
+        if not selected_symbols:
+            st.error("Centang dulu minimal satu saham sebelum menyalakan Screen ke Telegram.")
+        elif not telegram_credentials_ready():
+            st.error(
+                "Isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_GROUP_ID` dulu di Streamlit secrets, environment variable, atau `.env`."
+            )
+        else:
+            active_worker = start_telegram_worker(
+                selected_symbols=selected_symbols,
+                interval_label=interval_label,
+                period_label=period_label,
+                ema_period=ema_period,
+                breakdown_confirm_mode=entry_mode,
+                exit_mode=exit_mode,
+            )
+            st.success(
+                f"Worker Telegram aktif tiap {TELEGRAM_SEND_INTERVAL_SECONDS} detik untuk {len(selected_symbols)} saham."
+            )
+            st.rerun()
+
+    if active_worker is not None:
+        st.success(
+            f"Telegram worker aktif setiap {int(active_worker['interval_seconds'])} detik "
+            f"untuk {len(active_worker['selected_symbols'])} saham terpilih."
+        )
+        if st.button("Stop Telegram Worker", key="screener_stop_telegram_worker", use_container_width=False):
+            stop_telegram_worker()
+            st.success("Worker Telegram dimatikan.")
+            st.rerun()
+    else:
+        st.caption("Worker Telegram belum aktif. Centang saham lalu tekan `Screen` untuk mulai kirim otomatis.")
 
     render_screener_table(
         rows,
-        editor_key=f"screener_table_editor_{interval_label}_{period_label}_{ema_period}",
+        editor_key=(
+            f"screener_table_editor_{interval_label}_{period_label}_{ema_period}_{entry_mode}_{exit_mode}"
+        ),
     )
 
 

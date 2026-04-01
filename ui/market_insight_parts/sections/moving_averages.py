@@ -28,6 +28,13 @@ def _moving_average_context_line(label: str, length: int) -> str:
     )
 
 
+def _moving_average_exit_context_line(label: str, length: int) -> str:
+    return (
+        f"Trigger exit: waspadai keluar saat harga breakdown di bawah {label} {length}, "
+        f"terutama kalau candle close sudah tidak mampu bertahan di atas garis."
+    )
+
+
 
 def _slope_label(current_value: float, previous_value: float | None) -> tuple[str, str]:
     if previous_value is None:
@@ -100,6 +107,7 @@ def _build_single_moving_average_section(
     slope_text, slope_tone = _slope_label(line_value, previous_line)
     price_position_text = f"di atas {line_name}" if close_above else f"di bawah {line_name}"
     distance_text = format_price_distance_percentage(close_price, line_value)
+    bearish_breakdown = close_price < line_value
 
     if valid_pullback_entry:
         entry_value = f"Cocok untuk entry pullback {line_name}"
@@ -135,12 +143,28 @@ def _build_single_moving_average_section(
             *entry_details,
         ]
 
+    if bearish_breakdown:
+        exit_value = f"Exit sudah terpicu di bawah {line_name}"
+        exit_tone = "negative"
+        exit_details = [
+            f"Close {format_price_value(close_price)} sudah di bawah {line_name} {format_price_value(line_value)}",
+            "Pullback dianggap gagal kalau harga tidak mampu bertahan di atas garis acuan.",
+        ]
+    else:
+        exit_value = f"Belum ada trigger exit {line_name}"
+        exit_tone = "positive"
+        exit_details = [
+            f"Close {format_price_value(close_price)} masih bertahan di atas {line_name}",
+            f"Waspadai exit kalau nanti ada candle breakdown dan close menutup di bawah {line_name}.",
+        ]
+
     summary_text = (
         f"Harga sekarang berada {price_position_text}. Close terakhir {format_price_value(close_price)} "
         f"sedangkan {line_name} ada di {format_price_value(line_value)}."
     )
     context_text = (
         f"{_moving_average_context_line(line_label, length)} "
+        f"{_moving_average_exit_context_line(line_label, length)} "
         f"Kemiringan garis sedang {slope_text} dan jarak harga ke {line_name} sekitar {distance_text}."
     )
 
@@ -178,6 +202,12 @@ def _build_single_moving_average_section(
             value=trigger_value,
             color=TONE_COLORS[trigger_tone],
             detail_lines=trigger_details,
+        ),
+        build_indicator_note_info_box_html(
+            label="Trigger exit",
+            value=exit_value,
+            color=TONE_COLORS[exit_tone],
+            detail_lines=exit_details,
         ),
     ]
     return build_indicator_note_section_html(
