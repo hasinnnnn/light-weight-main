@@ -23,7 +23,7 @@ def _default_session_state_values() -> dict[str, Any]:
         "current_app_page": "chart",
         "symbol_input": "BUMI",
         "interval_option": "1 hari",
-        "period_option": "YTD",
+        "period_option": "1y",
         "loaded_result": None,
         "last_error": "",
         "selected_company_name": "",
@@ -42,7 +42,7 @@ def _default_session_state_values() -> dict[str, Any]:
         "backtest_params_parabolic_sar": get_default_parabolic_sar_params(),
         "backtest_params_volume_breakout": get_default_volume_breakout_params(),
         "backtest_result": None,
-        "backtest_period_label": "YTD",
+        "backtest_period_label": "1y",
         "backtest_enabled": False,
         "backtest_refresh_requested": False,
         "show_indicator_preview": True,
@@ -52,7 +52,7 @@ def _default_session_state_values() -> dict[str, Any]:
         "screener_breakdown_confirm_mode": "body_breakdown",
         "screener_exit_mode": "ema_breakdown",
         "screener_interval_label": "1 hari",
-        "screener_period_label": "YTD",
+        "screener_period_label": "1y",
         "screener_selected_symbols": [],
     }
 

@@ -185,7 +185,7 @@ def load_ema_screener_snapshot(
     """Load one uncached screener snapshot for worker and alert processing."""
     normalized_symbol = str(symbol or "").strip().upper()
     normalized_interval = str(interval_label or SCREENER_DEFAULT_INTERVAL_LABEL).strip()
-    normalized_period = str(period_label or "YTD").strip()
+    normalized_period = str(period_label or "1y").strip()
     normalized_ema_period = max(int(ema_period), 1)
     strategy_params = build_break_ema_strategy_params(
         ema_period=normalized_ema_period,

@@ -5,7 +5,11 @@ import sys
 import time
 from typing import Any
 
-from ui.screener.telegram_runner import TELEGRAM_SEND_INTERVAL_SECONDS, run_worker_cycle
+from ui.screener.telegram_runner import (
+    TELEGRAM_SEND_INTERVAL_SECONDS,
+    register_current_telegram_worker,
+    run_worker_cycle,
+)
 
 
 def _parse_args() -> dict[str, Any]:
@@ -32,6 +36,7 @@ def _parse_args() -> dict[str, Any]:
 
 def main() -> int:
     config = _parse_args()
+    register_current_telegram_worker(config)
     while True:
         try:
             run_worker_cycle(config)
@@ -40,6 +45,7 @@ def main() -> int:
         except Exception:
             # Keep the worker alive so transient network/data issues do not kill the schedule.
             pass
+
         time.sleep(TELEGRAM_SEND_INTERVAL_SECONDS)
 
 

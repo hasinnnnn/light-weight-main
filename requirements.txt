@@ -2,4 +2,6 @@ streamlit>=1.32
 pandas>=2.0
 yfinance>=0.2.40
 lightweight-charts>=2.1
+matplotlib>=3.8
+mplfinance>=0.12.10b0
 

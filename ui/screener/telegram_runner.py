@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -12,18 +13,35 @@ from urllib import parse, request
 
 import pandas as pd
 
+from telegram_bot.catalog import TELEGRAM_BOT_COMMANDS
+from telegram_bot.router import (
+    build_command_help_text as build_root_command_help_text,
+    build_inactive_worker_status_message_text as build_root_inactive_worker_status_message_text,
+    process_pending_telegram_commands as process_root_pending_telegram_commands,
+)
 from ui.backtest.sections.parameter_forms import option_label
 from ui.screener.signal_engine import build_break_ema_signal_snapshots
 from ui.screener.table import SCREENER_SELECTION_COLUMN, build_screener_table_dataframe
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-RUNTIME_DIR = ROOT_DIR / ".runtime"
+CUSTOM_RUNTIME_DIR = str(os.environ.get("CHART_HASIN_RUNTIME_DIR", "") or "").strip()
+RUNTIME_DIR = (
+    Path(CUSTOM_RUNTIME_DIR).expanduser()
+    if CUSTOM_RUNTIME_DIR
+    else (Path(tempfile.gettempdir()) / "chart-hasin-runtime")
+)
+TELEGRAM_COMMAND_WORKER_STATE_PATH = RUNTIME_DIR / "screener_telegram_command_worker.json"
 TELEGRAM_WORKER_STATE_PATH = RUNTIME_DIR / "screener_telegram_worker.json"
 TELEGRAM_RUNTIME_STATE_PATH = RUNTIME_DIR / "screener_telegram_runtime.json"
+TELEGRAM_COMMAND_CURSOR_PATH = RUNTIME_DIR / "screener_telegram_command_cursor.json"
+TELEGRAM_COMMAND_POLL_LOCK_PATH = RUNTIME_DIR / "screener_telegram_command_poll.lock"
+TELEGRAM_COMMAND_START_LOCK_PATH = RUNTIME_DIR / "screener_telegram_command_start.lock"
 TELEGRAM_MESSAGE_MAX_LENGTH = 3500
+TELEGRAM_COMMAND_CHECK_INTERVAL_SECONDS = 5
 TELEGRAM_SEND_INTERVAL_SECONDS = 300
 TELEGRAM_RUNTIME_EVENT_LIMIT = 300
+TELEGRAM_COMMAND_LOCK_STALE_SECONDS = 30
 VISIBLE_TELEGRAM_COLUMNS = [
     "Kode Saham",
     "Harga Sekarang",
@@ -128,6 +146,12 @@ def load_telegram_group_log_id() -> str:
     return str(env_values.get("TELEGRAM_GROUP_LOG_ID", "")).strip()
 
 
+def load_telegram_admin_user_id() -> str:
+    """Read one optional admin user id used to secure worker commands."""
+    env_values = load_telegram_settings()
+    return str(env_values.get("TELEGRAM_USER_ID", "")).strip()
+
+
 def telegram_credentials_ready() -> bool:
     """Return whether the bot token, main group, and log group are all available."""
     bot_token, group_id = load_telegram_credentials()
@@ -150,23 +174,231 @@ def build_selected_screener_dataframe(
     return selected_frame[VISIBLE_TELEGRAM_COLUMNS].reset_index(drop=True)
 
 
+def _call_telegram_api(
+    bot_token: str,
+    method_name: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call one Telegram Bot API method and return the decoded JSON payload."""
+    encoded_payload: bytes | None = None
+    request_method = "GET"
+    if payload is not None:
+        normalized_payload: dict[str, str] = {}
+        for key, value in payload.items():
+            if value is None:
+                continue
+            if isinstance(value, (dict, list, tuple)):
+                normalized_payload[str(key)] = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+            else:
+                normalized_payload[str(key)] = str(value)
+        encoded_payload = parse.urlencode(normalized_payload).encode("utf-8")
+        request_method = "POST"
+
+    raw_response = request.urlopen(  # noqa: S310 - fixed Telegram API endpoint
+        request.Request(
+            url=f"https://api.telegram.org/bot{bot_token}/{method_name}",
+            data=encoded_payload,
+            method=request_method,
+        ),
+        timeout=15,
+    ).read()
+    decoded_response = json.loads(raw_response.decode("utf-8"))
+    if not bool(decoded_response.get("ok", False)):
+        description = str(decoded_response.get("description", "") or "").strip()
+        raise RuntimeError(description or f"Telegram API `{method_name}` gagal dijalankan.")
+    return decoded_response
+
+
 def send_telegram_text(bot_token: str, group_id: str, text: str) -> None:
     """Send one plain-text message through the Telegram Bot API."""
-    payload = parse.urlencode(
+    _call_telegram_api(
+        bot_token,
+        "sendMessage",
         {
             "chat_id": group_id,
             "text": text,
             "disable_web_page_preview": "true",
         }
-    ).encode("utf-8")
-    request.urlopen(  # noqa: S310 - fixed Telegram API endpoint
-        request.Request(
-            url=f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            data=payload,
-            method="POST",
-        ),
-        timeout=15,
-    ).read()
+    )
+
+
+def send_telegram_photo(
+    bot_token: str,
+    group_id: str,
+    photo_bytes: bytes,
+    *,
+    caption: str = "",
+    filename: str = "chart.png",
+) -> None:
+    """Send one chart image through the Telegram Bot API."""
+    try:
+        import requests
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Package `requests` belum tersedia untuk kirim foto Telegram.") from exc
+
+    payload_data = {"chat_id": group_id}
+    if caption:
+        payload_data["caption"] = caption
+
+    response = requests.post(
+        f"https://api.telegram.org/bot{bot_token}/sendPhoto",
+        data=payload_data,
+        files={"photo": (filename, photo_bytes, "image/png")},
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if response.status_code >= 400 or not bool(payload.get("ok", False)):
+        description = str(payload.get("description", "") or "").strip()
+        if not description:
+            description = str(response.text or "").strip()
+        raise RuntimeError(description or "Telegram API `sendPhoto` gagal dijalankan.")
+
+
+def sync_telegram_bot_commands(bot_token: str) -> None:
+    """Register the Telegram slash-command menu shown in the chat UI."""
+    _call_telegram_api(
+        bot_token,
+        "setMyCommands",
+        {"commands": list(TELEGRAM_BOT_COMMANDS)},
+    )
+
+
+def sync_telegram_bot_commands_from_settings() -> None:
+    """Sync Telegram commands using the bot token available in settings."""
+    settings = load_telegram_settings()
+    bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
+    if not bot_token:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN wajib tersedia di Streamlit secrets, environment variable, atau .env."
+        )
+    sync_telegram_bot_commands(bot_token)
+
+
+def fetch_telegram_updates(bot_token: str, *, offset: int | None = None) -> list[dict[str, Any]]:
+    """Fetch pending Telegram updates used for simple bot commands."""
+    payload = {"offset": max(int(offset or 0), 0)} if offset is not None else None
+    response = _call_telegram_api(bot_token, "getUpdates", payload)
+    raw_updates = response.get("result", [])
+    if not isinstance(raw_updates, list):
+        return []
+    return [dict(update) for update in raw_updates]
+
+
+def load_command_cursor() -> int:
+    """Load the next Telegram update id shared across command-worker restarts."""
+    if not TELEGRAM_COMMAND_CURSOR_PATH.exists():
+        return 0
+    try:
+        payload = json.loads(TELEGRAM_COMMAND_CURSOR_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    return max(int(payload.get("last_command_update_id", 0) or 0), 0)
+
+
+def save_command_cursor(last_command_update_id: int) -> int:
+    """Persist the next Telegram update id so duplicate replies are less likely."""
+    ensure_runtime_dir()
+    normalized_update_id = max(int(last_command_update_id or 0), 0)
+    TELEGRAM_COMMAND_CURSOR_PATH.write_text(
+        json.dumps({"last_command_update_id": normalized_update_id}, indent=2),
+        encoding="utf-8",
+    )
+    return normalized_update_id
+
+
+def _runtime_lock_is_stale(lock_path: Path) -> bool:
+    """Return whether one runtime lock can be safely replaced."""
+    if not lock_path.exists():
+        return False
+
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+
+    pid = int(payload.get("pid", 0) or 0)
+    if pid > 0 and not is_process_running(pid):
+        return True
+
+    try:
+        lock_age_seconds = max((datetime.now().timestamp() - lock_path.stat().st_mtime), 0.0)
+    except OSError:
+        return True
+    return lock_age_seconds >= float(TELEGRAM_COMMAND_LOCK_STALE_SECONDS)
+
+
+def _acquire_runtime_lock(lock_path: Path) -> bool:
+    """Acquire one short-lived runtime lock shared across Telegram workers."""
+    ensure_runtime_dir()
+    for _ in range(2):
+        try:
+            file_descriptor = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError:
+            if not _runtime_lock_is_stale(lock_path):
+                return False
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                return False
+            continue
+        else:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as lock_file:
+                json.dump(
+                    {
+                        "pid": os.getpid(),
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
+                    },
+                    lock_file,
+                    indent=2,
+                )
+            return True
+    return False
+
+
+def _release_runtime_lock(lock_path: Path) -> None:
+    """Release one runtime lock when this process currently owns it."""
+    if not lock_path.exists():
+        return
+
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+
+    lock_pid = int(payload.get("pid", 0) or 0)
+    if lock_pid not in {0, os.getpid()}:
+        return
+
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def acquire_command_poll_lock() -> bool:
+    """Acquire one short-lived lock so only one worker polls Telegram at a time."""
+    return _acquire_runtime_lock(TELEGRAM_COMMAND_POLL_LOCK_PATH)
+
+
+def release_command_poll_lock() -> None:
+    """Release the shared Telegram polling lock when this worker owns it."""
+    _release_runtime_lock(TELEGRAM_COMMAND_POLL_LOCK_PATH)
+
+
+def acquire_command_start_lock() -> bool:
+    """Acquire one short-lived lock so only one process starts the command worker."""
+    return _acquire_runtime_lock(TELEGRAM_COMMAND_START_LOCK_PATH)
+
+
+def release_command_start_lock() -> None:
+    """Release the shared command-worker start lock when this process owns it."""
+    _release_runtime_lock(TELEGRAM_COMMAND_START_LOCK_PATH)
 
 
 def _current_local_datetime() -> datetime:
@@ -219,12 +451,20 @@ def _resolve_event_display_datetime(event: dict[str, Any]) -> Any:
 def load_runtime_state() -> dict[str, Any]:
     """Load one compact runtime state used to deduplicate live alerts."""
     if not TELEGRAM_RUNTIME_STATE_PATH.exists():
-        return {"startup_main_sent": False, "sent_event_ids": [], "cycle_count": 0}
+        return {
+            "startup_main_sent": False,
+            "sent_event_ids": [],
+            "cycle_count": 0,
+        }
 
     try:
         payload = json.loads(TELEGRAM_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"startup_main_sent": False, "sent_event_ids": [], "cycle_count": 0}
+        return {
+            "startup_main_sent": False,
+            "sent_event_ids": [],
+            "cycle_count": 0,
+        }
 
     sent_event_ids = [
         str(event_id).strip()
@@ -320,6 +560,48 @@ def _format_monitored_symbols(symbols: Iterable[str]) -> str:
         if str(symbol).strip()
     ]
     return ", ".join(f"*** {symbol} ***" for symbol in normalized_symbols) if normalized_symbols else "-"
+
+
+def build_command_help_text() -> str:
+    """Build one compact help text matching the registered slash commands."""
+    return build_root_command_help_text()
+
+
+def build_worker_status_message_text(config: dict[str, Any], runtime_state: dict[str, Any] | None = None) -> str:
+    """Build one admin-facing status message for Telegram bot commands."""
+    active_runtime_state = runtime_state or load_runtime_state()
+    last_cycle_text = _format_telegram_datetime(active_runtime_state.get("last_cycle_at", "") or "-")
+    cycle_count = max(int(active_runtime_state.get("cycle_count", 0) or 0), 0)
+    cycle_status_text = "Belum jalan"
+    if bool(active_runtime_state.get("startup_main_sent", False)):
+        cycle_status_text = "Startup" if cycle_count <= 0 else f"{cycle_count} X"
+
+    selected_symbols = [
+        str(symbol).strip().upper()
+        for symbol in config.get("selected_symbols", [])
+        if str(symbol).strip()
+    ]
+    return "\n".join(
+        [
+            f"Screener EMA {int(config['ema_period'])} Aktif",
+            f"Waktu cek: {_format_telegram_datetime(_current_local_datetime())}",
+            f"Cycle terakhir: {last_cycle_text}",
+            f"Status cycle: {cycle_status_text}",
+            f"Screening: tiap {int(config.get('interval_seconds', TELEGRAM_SEND_INTERVAL_SECONDS)) // 60} menit",
+            f"Interval chart: {config['interval_label']}",
+            (
+                f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
+                f"Exit: {option_label(str(config['exit_mode']))}"
+            ),
+            "",
+            f"Saham dipantau ({len(selected_symbols)}): {_format_monitored_symbols(selected_symbols)}",
+        ]
+    )
+
+
+def build_inactive_worker_status_message_text() -> str:
+    """Build one Telegram status message shown when no screener worker is active."""
+    return build_root_inactive_worker_status_message_text()
 
 
 def _build_log_stock_block(signal_snapshot: dict[str, Any]) -> str:
@@ -503,6 +785,46 @@ def worker_state() -> dict[str, Any] | None:
     return state
 
 
+def command_worker_state() -> dict[str, Any] | None:
+    """Load one active Telegram command-worker state when the process is still alive."""
+    if not TELEGRAM_COMMAND_WORKER_STATE_PATH.exists():
+        return None
+
+    try:
+        state = json.loads(TELEGRAM_COMMAND_WORKER_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    pid = int(state.get("pid", 0) or 0)
+    if pid <= 0 or not is_process_running(pid):
+        clear_command_worker_state()
+        return None
+    return state
+
+
+def command_worker_state_payload() -> dict[str, Any] | None:
+    """Read the raw Telegram command-worker state payload without liveness checks."""
+    if not TELEGRAM_COMMAND_WORKER_STATE_PATH.exists():
+        return None
+
+    try:
+        state = json.loads(TELEGRAM_COMMAND_WORKER_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return state
+
+
+def _worker_state_payload(path: Path) -> dict[str, Any] | None:
+    """Read one raw worker state payload without liveness checks."""
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return state
+
+
 def clear_worker_state() -> None:
     """Remove the saved worker-state and runtime files when they exist."""
     clear_runtime_state()
@@ -510,6 +832,60 @@ def clear_worker_state() -> None:
         TELEGRAM_WORKER_STATE_PATH.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def clear_command_worker_state() -> None:
+    """Remove the saved Telegram command-worker state file when it exists."""
+    try:
+        TELEGRAM_COMMAND_WORKER_STATE_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def current_process_owns_command_worker_state() -> bool:
+    """Return whether the saved command-worker state currently points to this process."""
+    state = command_worker_state_payload()
+    if not state:
+        return False
+    return int(state.get("pid", 0) or 0) == os.getpid()
+
+
+def register_current_command_worker() -> dict[str, Any]:
+    """Persist the actual pid of the running command worker process."""
+    ensure_runtime_dir()
+    existing_state = _worker_state_payload(TELEGRAM_COMMAND_WORKER_STATE_PATH) or {}
+    state = {
+        "pid": os.getpid(),
+        "interval_seconds": int(
+            existing_state.get("interval_seconds", TELEGRAM_COMMAND_CHECK_INTERVAL_SECONDS)
+            or TELEGRAM_COMMAND_CHECK_INTERVAL_SECONDS
+        ),
+        "started_at": str(existing_state.get("started_at", "")).strip() or datetime.now().isoformat(timespec="seconds"),
+    }
+    TELEGRAM_COMMAND_WORKER_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return state
+
+
+def register_current_telegram_worker(config: dict[str, Any]) -> dict[str, Any]:
+    """Persist the actual pid of the running screener worker process."""
+    ensure_runtime_dir()
+    existing_state = _worker_state_payload(TELEGRAM_WORKER_STATE_PATH) or {}
+    state = {
+        "pid": os.getpid(),
+        "selected_symbols": [
+            str(symbol).strip().upper()
+            for symbol in config.get("selected_symbols", [])
+            if str(symbol).strip()
+        ],
+        "interval_label": str(config.get("interval_label", "")).strip(),
+        "ema_period": int(config.get("ema_period", 0) or 0),
+        "breakdown_confirm_mode": str(config.get("breakdown_confirm_mode", "")).strip(),
+        "exit_mode": str(config.get("exit_mode", "")).strip(),
+        "interval_seconds": int(existing_state.get("interval_seconds", TELEGRAM_SEND_INTERVAL_SECONDS) or TELEGRAM_SEND_INTERVAL_SECONDS),
+        "started_at": str(existing_state.get("started_at", "")).strip() or datetime.now().isoformat(timespec="seconds"),
+    }
+    TELEGRAM_WORKER_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return state
 
 
 def is_process_running(pid: int) -> bool:
@@ -532,17 +908,7 @@ def stop_telegram_worker(*, send_notification: bool = True) -> bool:
 
     if send_notification:
         try:
-            settings = load_telegram_settings()
-            bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
-            alert_group_id = str(settings.get("TELEGRAM_GROUP_ID", "")).strip()
-            log_group_id = str(settings.get("TELEGRAM_GROUP_LOG_ID", "")).strip()
-            if bot_token and alert_group_id and log_group_id:
-                shutdown_text = build_shutdown_message_text(
-                    state,
-                    reason_text="Worker dihentikan, screening nonaktif.",
-                )
-                send_telegram_text(bot_token, alert_group_id, shutdown_text)
-                send_telegram_text(bot_token, log_group_id, shutdown_text)
+            send_worker_shutdown_notifications(state, reason_text="Worker dihentikan, screening nonaktif.")
         except Exception:
             pass
 
@@ -555,6 +921,57 @@ def stop_telegram_worker(*, send_notification: bool = True) -> bool:
     return True
 
 
+def ensure_telegram_command_worker() -> dict[str, Any] | None:
+    """Start one detached Telegram command listener when a bot token is available."""
+    ensure_runtime_dir()
+    active_state = command_worker_state()
+    if active_state is not None:
+        return active_state
+
+    if not acquire_command_start_lock():
+        return command_worker_state()
+
+    try:
+        active_state = command_worker_state()
+        if active_state is not None:
+            return active_state
+
+        settings = load_telegram_settings()
+        bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
+        if not bot_token:
+            return None
+
+        try:
+            sync_telegram_bot_commands(bot_token)
+        except Exception:
+            pass
+
+        command = [
+            sys.executable,
+            "-m",
+            "telegram_bot.command_worker",
+        ]
+        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        process = subprocess.Popen(
+            command,
+            cwd=str(ROOT_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creation_flags,
+        )
+        state = {
+            "pid": 0,
+            "launcher_pid": process.pid,
+            "interval_seconds": TELEGRAM_COMMAND_CHECK_INTERVAL_SECONDS,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        TELEGRAM_COMMAND_WORKER_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        return state
+    finally:
+        release_command_start_lock()
+
+
 def start_telegram_worker(
     *,
     selected_symbols: Iterable[str],
@@ -565,8 +982,16 @@ def start_telegram_worker(
 ) -> dict[str, Any]:
     """Start one detached worker process that checks fresh BUY/SELL signals every 5 minutes."""
     ensure_runtime_dir()
+    ensure_telegram_command_worker()
     stop_telegram_worker(send_notification=False)
     clear_runtime_state()
+    settings = load_telegram_settings()
+    bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
+    if bot_token:
+        try:
+            sync_telegram_bot_commands(bot_token)
+        except Exception:
+            pass
 
     normalized_symbols = [
         str(symbol).strip().upper()
@@ -600,7 +1025,8 @@ def start_telegram_worker(
     )
 
     state = {
-        "pid": process.pid,
+        "pid": 0,
+        "launcher_pid": process.pid,
         "selected_symbols": normalized_symbols,
         "interval_label": str(interval_label),
         "ema_period": int(ema_period),
@@ -611,6 +1037,37 @@ def start_telegram_worker(
     }
     TELEGRAM_WORKER_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return state
+
+
+def send_worker_shutdown_notifications(config: dict[str, Any], *, reason_text: str) -> None:
+    """Send one worker stop message to both alert and log destinations."""
+    settings = load_telegram_settings()
+    bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
+    alert_group_id = str(settings.get("TELEGRAM_GROUP_ID", "")).strip()
+    log_group_id = str(settings.get("TELEGRAM_GROUP_LOG_ID", "")).strip()
+    if not bot_token or not alert_group_id or not log_group_id:
+        return
+
+    shutdown_text = build_shutdown_message_text(config, reason_text=reason_text)
+    send_telegram_text(bot_token, alert_group_id, shutdown_text)
+    send_telegram_text(bot_token, log_group_id, shutdown_text)
+
+
+def initialize_telegram_command_cursor(bot_token: str) -> int:
+    """Return the next Telegram update id so stale commands are ignored on startup."""
+    next_update_id = load_command_cursor()
+    updates = fetch_telegram_updates(
+        bot_token,
+        offset=next_update_id if next_update_id > 0 else None,
+    )
+    for update in updates:
+        next_update_id = max(next_update_id, int(update.get("update_id", -1) or -1) + 1)
+    return save_command_cursor(next_update_id)
+
+
+def process_pending_telegram_commands(*, last_command_update_id: int = 0) -> dict[str, Any]:
+    """Reply to simple Telegram commands sent to the bot."""
+    return process_root_pending_telegram_commands(last_command_update_id=last_command_update_id)
 
 
 def run_worker_cycle(config: dict[str, Any]) -> dict[str, Any]:
@@ -675,20 +1132,46 @@ def run_worker_cycle(config: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "TELEGRAM_BOT_COMMANDS",
+    "TELEGRAM_COMMAND_CHECK_INTERVAL_SECONDS",
     "TELEGRAM_SEND_INTERVAL_SECONDS",
+    "build_command_help_text",
+    "build_inactive_worker_status_message_text",
     "build_selected_screener_dataframe",
     "build_screening_log_text",
     "build_screening_log_chunks",
     "build_shutdown_message_text",
     "build_signal_message_text",
     "build_startup_message_text",
+    "build_worker_status_message_text",
+    "acquire_command_poll_lock",
+    "acquire_command_start_lock",
+    "clear_command_worker_state",
     "clear_worker_state",
+    "command_worker_state_payload",
+    "command_worker_state",
+    "current_process_owns_command_worker_state",
+    "ensure_telegram_command_worker",
+    "fetch_telegram_updates",
+    "initialize_telegram_command_cursor",
+    "load_command_cursor",
+    "load_telegram_admin_user_id",
     "load_telegram_credentials",
     "load_telegram_group_log_id",
     "load_telegram_settings",
+    "process_pending_telegram_commands",
+    "register_current_command_worker",
+    "register_current_telegram_worker",
+    "release_command_poll_lock",
+    "release_command_start_lock",
     "run_worker_cycle",
+    "save_command_cursor",
+    "send_telegram_photo",
+    "send_worker_shutdown_notifications",
     "start_telegram_worker",
     "stop_telegram_worker",
+    "sync_telegram_bot_commands",
+    "sync_telegram_bot_commands_from_settings",
     "telegram_credentials_ready",
     "worker_state",
 ]

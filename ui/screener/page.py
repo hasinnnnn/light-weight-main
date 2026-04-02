@@ -12,6 +12,7 @@ from ui.screener.telegram_runner import (
     TELEGRAM_SEND_INTERVAL_SECONDS,
     start_telegram_worker,
     stop_telegram_worker,
+    sync_telegram_bot_commands_from_settings,
     telegram_credentials_ready,
     worker_state,
 )
@@ -84,7 +85,7 @@ def render_screener_page() -> None:
             )
         )
     with period_col:
-        period_index = PERIOD_OPTIONS.index("YTD") if "YTD" in PERIOD_OPTIONS else 0
+        period_index = PERIOD_OPTIONS.index("1y") if "1y" in PERIOD_OPTIONS else 0
         period_label = str(
             st.selectbox(
                 "Periode",
@@ -106,6 +107,21 @@ def render_screener_page() -> None:
         f"Tombol `Screen` akan menyalakan worker Telegram tiap {TELEGRAM_SEND_INTERVAL_SECONDS // 60} menit "
         "untuk saham yang sedang diceklis. Worker screening real mengikuti Panjang EMA, Mode Entry, Mode Exit, dan Interval. "
         "Dropdown Periode tetap dipakai untuk tabel screener, tapi tidak dipakai sebagai parameter alert screening."
+    )
+    if st.button(
+        "Sync Telegram Commands",
+        key="screener_sync_telegram_commands",
+        use_container_width=False,
+    ):
+        try:
+            sync_telegram_bot_commands_from_settings()
+        except RuntimeError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Command Telegram berhasil disinkronkan. Coba buka chat bot lalu ketik `/`.")
+    st.caption(
+        "Command bot yang disinkronkan: `/help`, `/status`, `/stop`, `/srd`, `/srk`. "
+        "Command listener akan aktif selama app terbuka dan `TELEGRAM_BOT_TOKEN` tersedia."
     )
 
     with st.spinner("Menghitung data screener EMA..."):

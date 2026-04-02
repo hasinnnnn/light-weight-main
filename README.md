@@ -41,7 +41,7 @@ streamlit run app.py
 The app auto-loads `AAPL` on first run with:
 
 - Interval: `1 hari`
-- Period: `YTD`
+- Period: `1y`
 
 ## Important Notes
 

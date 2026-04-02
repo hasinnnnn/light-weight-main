@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
 from datetime import datetime
 from unittest.mock import patch
 
+import pandas as pd
+from PIL import Image
+
+import telegram_bot.support_resistance as support_resistance_module
+from telegram_bot.support_resistance import (
+    build_support_resistance_chart_image_bytes,
+    build_support_resistance_message_text,
+)
 from ui.screener.signal_engine import resolve_screening_period_label
 from ui.screener.telegram_runner import (
+    TELEGRAM_BOT_COMMANDS,
+    build_command_help_text,
     build_screening_log_chunks,
     build_screening_log_text,
     build_shutdown_message_text,
@@ -13,8 +24,10 @@ from ui.screener.telegram_runner import (
     build_signal_message_text,
     build_startup_message_text,
     load_telegram_settings,
+    process_pending_telegram_commands,
     run_worker_cycle,
     stop_telegram_worker,
+    sync_telegram_bot_commands,
 )
 
 
@@ -210,6 +223,16 @@ class ScreenerTelegramTests(unittest.TestCase):
         self.assertIn("Status akhir: Worker dihentikan, screening nonaktif.", text)
         self.assertIn("Saham dipantau (2): *** BUMI ***, *** MEDC ***", text)
 
+    def test_build_command_help_text_lists_registered_commands(self) -> None:
+        text = build_command_help_text()
+
+        self.assertIn("Bot Screener & Analisis", text)
+        for command in TELEGRAM_BOT_COMMANDS:
+            self.assertIn(f"/{command['command']} - {command['description']}", text)
+        self.assertIn("/srd BUMI", text)
+        self.assertIn("/srk BUMI", text)
+        self.assertIn("TELEGRAM_USER_ID", text)
+
     def test_build_screening_log_text_formats_detailed_stock_blocks(self) -> None:
         snapshots = [
             {
@@ -277,6 +300,523 @@ class ScreenerTelegramTests(unittest.TestCase):
         self.assertEqual(settings["TELEGRAM_BOT_TOKEN"], "streamlit-token")
         self.assertEqual(settings["TELEGRAM_GROUP_ID"], "streamlit-group")
         self.assertEqual(settings["TELEGRAM_GROUP_LOG_ID"], "streamlit-log-group")
+
+    def test_sync_telegram_bot_commands_calls_set_my_commands(self) -> None:
+        with patch("ui.screener.telegram_runner._call_telegram_api") as call_telegram_api:
+            sync_telegram_bot_commands("token")
+
+        call_telegram_api.assert_called_once_with(
+            "token",
+            "setMyCommands",
+            {"commands": list(TELEGRAM_BOT_COMMANDS)},
+        )
+
+    def test_process_pending_telegram_commands_handles_help_status_and_stop(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={
+                    "TELEGRAM_BOT_TOKEN": "token",
+                    "TELEGRAM_USER_ID": "999",
+                },
+            ),
+            patch(
+                "ui.screener.telegram_runner.load_runtime_state",
+                return_value={
+                    "startup_main_sent": True,
+                    "sent_event_ids": [],
+                    "cycle_count": 4,
+                    "last_cycle_at": "2026-04-02T15:36:12",
+                },
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 101,
+                        "message": {
+                            "text": "/help",
+                            "chat": {"id": "777"},
+                            "from": {"id": "123"},
+                        },
+                    },
+                    {
+                        "update_id": 102,
+                        "message": {
+                            "text": "/status",
+                            "chat": {"id": "888"},
+                            "from": {"id": "999"},
+                        },
+                    },
+                    {
+                        "update_id": 103,
+                        "message": {
+                            "text": "/stop",
+                            "chat": {"id": "888"},
+                            "from": {"id": "999"},
+                        },
+                    },
+                ],
+            ),
+            patch("ui.screener.telegram_runner.worker_state", return_value=dict(self.sample_config)),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+            patch("ui.screener.telegram_runner.stop_telegram_worker", return_value=True) as stop_telegram_worker,
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=101)
+
+        self.assertEqual(summary["processed_count"], 3)
+        self.assertEqual(summary["last_command_update_id"], 104)
+        self.assertEqual(len(send_calls), 3)
+        self.assertEqual(send_calls[0][0], "777")
+        self.assertIn("Command tersedia:", send_calls[0][1])
+        self.assertIn("/help - Lihat daftar command bot", send_calls[0][1])
+        self.assertEqual(send_calls[1][0], "888")
+        self.assertIn("Cycle terakhir: 2-April-2026 15:36:12", send_calls[1][1])
+        self.assertIn("Status cycle: 4 X", send_calls[1][1])
+        self.assertEqual(send_calls[2][0], "888")
+        self.assertIn("Perintah `/stop` diterima", send_calls[2][1])
+        stop_telegram_worker.assert_called_once()
+
+    def test_process_pending_telegram_commands_requires_admin_for_stop(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={
+                    "TELEGRAM_BOT_TOKEN": "token",
+                },
+            ),
+            patch(
+                "ui.screener.telegram_runner.load_runtime_state",
+                return_value={
+                    "startup_main_sent": True,
+                    "sent_event_ids": [],
+                    "cycle_count": 1,
+                    "last_cycle_at": "2026-04-02T15:36:12",
+                },
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 201,
+                        "message": {
+                            "text": "/stop",
+                            "chat": {"id": "999"},
+                            "from": {"id": "999"},
+                        },
+                    }
+                ],
+            ),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+            patch("ui.screener.telegram_runner.stop_telegram_worker") as stop_telegram_worker,
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=201)
+
+        self.assertEqual(summary["last_command_update_id"], 202)
+        self.assertEqual(len(send_calls), 1)
+        self.assertEqual(send_calls[0][0], "999")
+        self.assertIn("Isi `TELEGRAM_USER_ID` dulu", send_calls[0][1])
+        stop_telegram_worker.assert_not_called()
+
+    def test_process_pending_telegram_commands_reports_inactive_worker_status(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={
+                    "TELEGRAM_BOT_TOKEN": "token",
+                    "TELEGRAM_USER_ID": "999",
+                },
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 301,
+                        "message": {
+                            "text": "/status",
+                            "chat": {"id": "999"},
+                            "from": {"id": "999"},
+                        },
+                    }
+                ],
+            ),
+            patch("ui.screener.telegram_runner.worker_state", return_value=None),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=301)
+
+        self.assertEqual(summary["processed_count"], 1)
+        self.assertEqual(summary["last_command_update_id"], 302)
+        self.assertEqual(len(send_calls), 1)
+        self.assertEqual(send_calls[0][0], "999")
+        self.assertIn("Screener belum aktif.", send_calls[0][1])
+
+    def test_process_pending_telegram_commands_routes_srd_and_srk(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+        photo_calls: list[str] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        def _capture_photo(bot_token: str, group_id: str, photo_bytes: bytes, **kwargs: object) -> None:
+            photo_calls.append(group_id)
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={"TELEGRAM_BOT_TOKEN": "token"},
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 401,
+                        "message": {
+                            "text": "/srd bumi",
+                            "chat": {"id": "777"},
+                            "from": {"id": "123"},
+                        },
+                    },
+                    {
+                        "update_id": 402,
+                        "message": {
+                            "text": "/srk bumi",
+                            "chat": {"id": "777"},
+                            "from": {"id": "123"},
+                        },
+                    },
+                ],
+            ),
+            patch(
+                "telegram_bot.router.build_support_resistance_message_text",
+                side_effect=["SR terdekat BUMI", "SR kuat BUMI"],
+            ) as build_sr_message_text,
+            patch(
+                "telegram_bot.router.build_support_resistance_chart_image_bytes",
+                return_value=None,
+            ),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+            patch("ui.screener.telegram_runner.send_telegram_photo", side_effect=_capture_photo),
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=401)
+
+        self.assertEqual(summary["processed_count"], 2)
+        self.assertEqual(summary["last_command_update_id"], 403)
+        self.assertEqual(len(send_calls), 2)
+        self.assertEqual(photo_calls, [])
+        self.assertEqual(send_calls[0], ("777", "SR terdekat BUMI"))
+        self.assertEqual(send_calls[1], ("777", "SR kuat BUMI"))
+        self.assertEqual(build_sr_message_text.call_count, 2)
+        self.assertEqual(build_sr_message_text.call_args_list[0].args[0], "BUMI")
+        self.assertFalse(bool(build_sr_message_text.call_args_list[0].kwargs["strong"]))
+        self.assertEqual(build_sr_message_text.call_args_list[1].args[0], "BUMI")
+        self.assertTrue(bool(build_sr_message_text.call_args_list[1].kwargs["strong"]))
+
+    def test_process_pending_telegram_commands_treats_command_name_case_insensitively(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={"TELEGRAM_BOT_TOKEN": "token"},
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 451,
+                        "message": {
+                            "text": "/SrK bumi",
+                            "chat": {"id": "777"},
+                            "from": {"id": "123"},
+                        },
+                    },
+                ],
+            ),
+            patch(
+                "telegram_bot.router.build_support_resistance_message_text",
+                return_value="SR kuat BUMI",
+            ) as build_sr_message_text,
+            patch(
+                "telegram_bot.router.build_support_resistance_chart_image_bytes",
+                return_value=None,
+            ),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=451)
+
+        self.assertEqual(summary["processed_count"], 1)
+        self.assertEqual(summary["last_command_update_id"], 452)
+        self.assertEqual(send_calls, [("777", "SR kuat BUMI")])
+        self.assertEqual(build_sr_message_text.call_args.args[0], "BUMI")
+        self.assertTrue(bool(build_sr_message_text.call_args.kwargs["strong"]))
+
+    def test_process_pending_telegram_commands_sends_chart_photo_when_available(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+        photo_calls: list[tuple[str, int, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        def _capture_photo(bot_token: str, group_id: str, photo_bytes: bytes, **kwargs: object) -> None:
+            photo_calls.append((group_id, len(photo_bytes), str(kwargs.get("caption", ""))))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={"TELEGRAM_BOT_TOKEN": "token"},
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 501,
+                        "message": {
+                            "text": "/srd bumi",
+                            "chat": {"id": "777"},
+                            "from": {"id": "123"},
+                        },
+                    },
+                ],
+            ),
+            patch(
+                "telegram_bot.router.build_support_resistance_chart_image_bytes",
+                return_value=b"png-bytes",
+            ),
+            patch(
+                "telegram_bot.router.build_support_resistance_message_text",
+                return_value="SR terdekat BUMI",
+            ),
+            patch("ui.screener.telegram_runner.send_telegram_photo", side_effect=_capture_photo),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=501)
+
+        self.assertEqual(summary["processed_count"], 1)
+        self.assertEqual(summary["last_command_update_id"], 502)
+        self.assertEqual(photo_calls, [("777", 9, "SR terdekat BUMI")])
+        self.assertEqual(send_calls, [])
+
+    def test_process_pending_telegram_commands_falls_back_to_text_when_send_photo_fails(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={"TELEGRAM_BOT_TOKEN": "token"},
+            ),
+            patch(
+                "ui.screener.telegram_runner.fetch_telegram_updates",
+                return_value=[
+                    {
+                        "update_id": 551,
+                        "message": {
+                            "text": "/srd bumi",
+                            "chat": {"id": "777"},
+                            "from": {"id": "123"},
+                        },
+                    },
+                ],
+            ),
+            patch(
+                "telegram_bot.router.build_support_resistance_chart_image_bytes",
+                return_value=b"png-bytes",
+            ),
+            patch(
+                "telegram_bot.router.build_support_resistance_message_text",
+                return_value="SR terdekat BUMI",
+            ),
+            patch(
+                "ui.screener.telegram_runner.send_telegram_photo",
+                side_effect=RuntimeError("sendPhoto gagal"),
+            ),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+        ):
+            summary = process_pending_telegram_commands(last_command_update_id=551)
+
+        self.assertEqual(summary["processed_count"], 1)
+        self.assertEqual(summary["last_command_update_id"], 552)
+        self.assertEqual(
+            send_calls,
+            [("777", "SR terdekat BUMI\n\nChart image belum berhasil dikirim sekarang, jadi saya kirim detail teks dulu.")],
+        )
+
+    def test_build_support_resistance_message_text_formats_nearest_levels(self) -> None:
+        sample_result = type(
+            "SampleResult",
+            (),
+            {
+                "data": object(),
+                "symbol": "BUMI",
+                "company_name": "Bumi Resources Tbk.",
+                "interval_label": "1 hari",
+                "period_label": "1y",
+                "previous_close": 136.0,
+                "uses_bei_price_fractions": True,
+            },
+        )()
+        sample_summary = {
+            "current_price": 132.0,
+            "support": {
+                "price": 128.0,
+                "zone_bottom": 126.0,
+                "zone_top": 130.0,
+                "bounces": 3,
+            },
+            "resistance": {
+                "price": 138.0,
+                "zone_bottom": 136.0,
+                "zone_top": 140.0,
+                "bounces": 2,
+            },
+        }
+
+        with (
+            patch("telegram_bot.support_resistance.load_market_data", return_value=sample_result),
+            patch(
+                "telegram_bot.support_resistance.describe_nearest_support_resistance",
+                return_value=sample_summary,
+            ) as describe_nearest_support_resistance,
+        ):
+            text = build_support_resistance_message_text("bumi", strong=False)
+
+        self.assertIn("SR Terdekat BUMI", text)
+        self.assertIn("Nama: Bumi Resources Tbk.", text)
+        self.assertIn("Harga terakhir: 132 | 4 (-2.94%)", text)
+        self.assertIn("Support:\n- Titik: 128\n- Zona: 126 - 130\n- Jarak: 3.03%\n- Pantulan: 3", text)
+        self.assertIn("Resistance:\n- Titik: 138\n- Zona: 136 - 140\n- Jarak: 4.55%\n- Pantulan: 2", text)
+        self.assertEqual(describe_nearest_support_resistance.call_args.args[0], sample_result.data)
+        self.assertEqual(describe_nearest_support_resistance.call_args.args[1]["key"], "NEAREST_SUPPORT_RESISTANCE")
+
+    def test_build_support_resistance_message_text_formats_strong_levels(self) -> None:
+        sample_result = type(
+            "SampleResult",
+            (),
+            {
+                "data": object(),
+                "symbol": "BUMI",
+                "company_name": "Bumi Resources Tbk.",
+                "interval_label": "1 hari",
+                "period_label": "1y",
+                "previous_close": 128.0,
+                "uses_bei_price_fractions": True,
+            },
+        )()
+        sample_summary = {
+            "current_price": 132.0,
+            "analysis_timeframe": "Daily",
+            "support": {
+                "price": 125.0,
+                "zone_bottom": 123.0,
+                "zone_top": 127.0,
+                "bounces": 4,
+                "breakout_count": 0,
+                "high_volume_reversals": 2,
+                "average_volume_ratio": 1.44,
+            },
+            "resistance": None,
+        }
+
+        with (
+            patch("telegram_bot.support_resistance.load_market_data", return_value=sample_result),
+            patch(
+                "telegram_bot.support_resistance.describe_strong_support_resistance",
+                return_value=sample_summary,
+            ) as describe_strong_support_resistance,
+        ):
+            text = build_support_resistance_message_text("BUMI", strong=True)
+
+        self.assertIn("SR Kuat BUMI", text)
+        self.assertIn("Harga terakhir: 132 | 4 (+3.12%)", text)
+        self.assertIn("Timeframe analisis: Daily", text)
+        self.assertIn("Support:\n- Titik: 125\n- Zona: 123 - 127\n- Jarak: 5.30%\n- Pantulan: 4", text)
+        self.assertIn("Breakout count: 0", text)
+        self.assertIn("Reversal volume kuat: 2", text)
+        self.assertIn("Rata-rata volume reversal: 1.44x", text)
+        self.assertIn("Resistance:\n- Belum ketemu level yang valid", text)
+        self.assertEqual(describe_strong_support_resistance.call_args.args[0], sample_result.data)
+        self.assertEqual(describe_strong_support_resistance.call_args.args[1]["key"], "STRONG_SUPPORT_RESISTANCE")
+        self.assertEqual(describe_strong_support_resistance.call_args.kwargs["interval_label"], "1 hari")
+
+    def test_build_support_resistance_chart_image_bytes_returns_png(self) -> None:
+        sample_result = type(
+            "SampleResult",
+            (),
+            {
+                "data": pd.DataFrame(
+                    {
+                        "time": pd.date_range("2026-01-01", periods=40, freq="D"),
+                        "open": [100 + index for index in range(40)],
+                        "high": [102 + index for index in range(40)],
+                        "low": [98 + index for index in range(40)],
+                        "close": [101 + index for index in range(40)],
+                        "volume": [1_000 + (index * 25) for index in range(40)],
+                    }
+                ),
+                "symbol": "BUMI",
+                "company_name": "Bumi Resources Tbk.",
+                "interval_label": "1 hari",
+                "period_label": "1y",
+            },
+        )()
+        sample_summary = {
+            "current_price": 140.0,
+            "support": {
+                "price": 135.0,
+                "zone_bottom": 133.0,
+                "zone_top": 137.0,
+                "bounces": 3,
+            },
+            "resistance": {
+                "price": 145.0,
+                "zone_bottom": 143.0,
+                "zone_top": 147.0,
+                "bounces": 2,
+            },
+        }
+
+        with (
+            patch("telegram_bot.support_resistance.load_market_data", return_value=sample_result),
+            patch(
+                "telegram_bot.support_resistance.describe_nearest_support_resistance",
+                return_value=sample_summary,
+            ),
+        ):
+            image_bytes = build_support_resistance_chart_image_bytes("BUMI", strong=False)
+
+        self.assertIsNotNone(image_bytes)
+        self.assertTrue(bool(image_bytes))
+        self.assertTrue(bytes(image_bytes).startswith(b"\x89PNG"))
+        with Image.open(BytesIO(image_bytes)) as image:
+            self.assertLessEqual(image.size[0], 2500)
+            self.assertLessEqual(image.size[1], 1600)
+
+    def test_format_compact_axis_value_uses_short_suffixes(self) -> None:
+        self.assertEqual(support_resistance_module._format_compact_axis_value(500), "500")
+        self.assertEqual(support_resistance_module._format_compact_axis_value(12_500), "12.5K")
+        self.assertEqual(support_resistance_module._format_compact_axis_value(500_000), "500K")
+        self.assertEqual(support_resistance_module._format_compact_axis_value(125_000_000), "125M")
 
     def test_run_worker_cycle_sends_startup_alert_signal_and_log_once(self) -> None:
         sample_snapshot = {

@@ -13,6 +13,7 @@ from data.market_data_service import DataServiceError, load_market_data
 from ui.backtest import render_backtest_result_card
 from ui.market_insight import render_indicator_explanation_card, render_market_insight_card
 from ui.screener import render_screener_page
+from ui.screener.telegram_runner import ensure_telegram_command_worker
 from ui.theme import render_app_styles
 from ui.top_toolbar import render_top_toolbar
 
@@ -41,6 +42,7 @@ def main() -> None:
     """Run the Streamlit application."""
     st.set_page_config(page_title="Chart Hasin", layout="wide")
     initialize_session_state()
+    ensure_telegram_command_worker()
     render_app_styles()
 
     st.title("Chart Hasin")
