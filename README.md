@@ -31,6 +31,14 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Run With Telegram Listener
+
+```bash
+python serve_streamlit.py
+```
+
+Use `python serve_streamlit.py` for deployments that need the Telegram slash-command bot to stay alive as soon as the server boots. This wrapper starts the Telegram command listener first, then launches Streamlit on `0.0.0.0:$PORT` when the platform provides a `PORT` variable.
+
 ## Example Usage
 
 1. Start the app with `streamlit run app.py`

@@ -799,6 +799,16 @@ def command_worker_state() -> dict[str, Any] | None:
     if pid <= 0 or not is_process_running(pid):
         clear_command_worker_state()
         return None
+    if pid == os.getpid():
+        try:
+            from telegram_bot.command_worker import background_command_worker_alive
+        except Exception:
+            background_alive = True
+        else:
+            background_alive = background_command_worker_alive()
+        if not background_alive:
+            clear_command_worker_state()
+            return None
     return state
 
 
@@ -922,7 +932,7 @@ def stop_telegram_worker(*, send_notification: bool = True) -> bool:
 
 
 def ensure_telegram_command_worker() -> dict[str, Any] | None:
-    """Start one detached Telegram command listener when a bot token is available."""
+    """Start one singleton Telegram command listener when a bot token is available."""
     ensure_runtime_dir()
     active_state = command_worker_state()
     if active_state is not None:
@@ -941,33 +951,9 @@ def ensure_telegram_command_worker() -> dict[str, Any] | None:
         if not bot_token:
             return None
 
-        try:
-            sync_telegram_bot_commands(bot_token)
-        except Exception:
-            pass
+        from telegram_bot.command_worker import start_background_command_worker
 
-        command = [
-            sys.executable,
-            "-m",
-            "telegram_bot.command_worker",
-        ]
-        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        process = subprocess.Popen(
-            command,
-            cwd=str(ROOT_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        state = {
-            "pid": 0,
-            "launcher_pid": process.pid,
-            "interval_seconds": TELEGRAM_COMMAND_CHECK_INTERVAL_SECONDS,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        TELEGRAM_COMMAND_WORKER_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        return state
+        return start_background_command_worker()
     finally:
         release_command_start_lock()
 

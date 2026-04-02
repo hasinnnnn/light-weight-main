@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from io import BytesIO
 from datetime import datetime
@@ -9,6 +10,7 @@ import pandas as pd
 from PIL import Image
 
 import telegram_bot.support_resistance as support_resistance_module
+from serve_streamlit import build_streamlit_command
 from telegram_bot.support_resistance import (
     build_support_resistance_chart_image_bytes,
     build_support_resistance_message_text,
@@ -23,6 +25,7 @@ from ui.screener.telegram_runner import (
     build_selected_screener_dataframe,
     build_signal_message_text,
     build_startup_message_text,
+    ensure_telegram_command_worker,
     load_telegram_settings,
     process_pending_telegram_commands,
     run_worker_cycle,
@@ -310,6 +313,42 @@ class ScreenerTelegramTests(unittest.TestCase):
             "setMyCommands",
             {"commands": list(TELEGRAM_BOT_COMMANDS)},
         )
+
+    def test_ensure_telegram_command_worker_starts_background_listener(self) -> None:
+        expected_state = {
+            "pid": 4321,
+            "interval_seconds": 5,
+            "started_at": "2026-04-02T22:00:00",
+        }
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.command_worker_state",
+                side_effect=[None, None],
+            ),
+            patch("ui.screener.telegram_runner.acquire_command_start_lock", return_value=True),
+            patch("ui.screener.telegram_runner.release_command_start_lock"),
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={"TELEGRAM_BOT_TOKEN": "token"},
+            ),
+            patch(
+                "telegram_bot.command_worker.start_background_command_worker",
+                return_value=expected_state,
+            ) as start_background_command_worker,
+        ):
+            state = ensure_telegram_command_worker()
+
+        self.assertEqual(state, expected_state)
+        start_background_command_worker.assert_called_once_with()
+
+    def test_build_streamlit_command_uses_platform_port(self) -> None:
+        with patch.dict("os.environ", {"PORT": "9999"}, clear=False):
+            command = build_streamlit_command("--server.headless=true")
+
+        self.assertEqual(command[:6], [sys.executable, "-m", "streamlit", "run", "app.py", "--server.address=0.0.0.0"])
+        self.assertIn("--server.port=9999", command)
+        self.assertIn("--server.headless=true", command)
 
     def test_process_pending_telegram_commands_handles_help_status_and_stop(self) -> None:
         send_calls: list[tuple[str, str]] = []
