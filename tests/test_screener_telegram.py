@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from ui.screener.signal_engine import resolve_screening_period_label
 from ui.screener.telegram_runner import (
     build_screening_log_chunks,
     build_screening_log_text,
+    build_shutdown_message_text,
     build_selected_screener_dataframe,
     build_signal_message_text,
     build_startup_message_text,
     load_telegram_settings,
     run_worker_cycle,
+    stop_telegram_worker,
 )
 
 
@@ -170,12 +173,41 @@ class ScreenerTelegramTests(unittest.TestCase):
         )
         self.assertNotIn("Trigger entry:", text)
 
+    def test_build_signal_message_text_uses_current_clock_for_date_only_event(self) -> None:
+        signal_snapshot = {
+            "row": {
+                "symbol": "RLCO",
+                "current_price_text": "5,800",
+                "price_change_text": "800 (-12.12%)",
+                "total_trades_text": "6",
+                "net_profit_text": "+Rp 80.000,00",
+                "win_rate_text": "50.00%",
+            },
+            "note_payload": self.sample_note_payload,
+        }
+        event = {"action": "SELL", "time_text": "2026-04-02"}
+
+        with patch(
+            "ui.screener.telegram_runner._current_local_datetime",
+            return_value=datetime(2026, 4, 2, 15, 36, 12),
+        ):
+            text = build_signal_message_text(signal_snapshot, event, self.sample_config)
+
+        self.assertIn("Waktu Event: 2-April-2026 15:36:12", text)
+
     def test_build_startup_message_text_mentions_symbols_and_interval(self) -> None:
         text = build_startup_message_text(self.sample_config)
         self.assertIn("Screener EMA 10 Aktif", text)
         self.assertRegex(text, r"Waktu: \d{1,2}-[A-Za-z]+-\d{4} \d{2}:\d{2}:\d{2}")
         self.assertIn("Screening: tiap 5 menit", text)
         self.assertIn("Status awal: worker siap kirim alert BUY/SELL baru sesuai flow backtest BREAK_EMA.", text)
+        self.assertIn("Saham dipantau (2): *** BUMI ***, *** MEDC ***", text)
+
+    def test_build_shutdown_message_text_mentions_nonaktif_state(self) -> None:
+        text = build_shutdown_message_text(self.sample_config, reason_text="Worker dihentikan, screening nonaktif.")
+        self.assertIn("Screener EMA 10 Nonaktif", text)
+        self.assertRegex(text, r"Waktu: \d{1,2}-[A-Za-z]+-\d{4} \d{2}:\d{2}:\d{2}")
+        self.assertIn("Status akhir: Worker dihentikan, screening nonaktif.", text)
         self.assertIn("Saham dipantau (2): *** BUMI ***, *** MEDC ***", text)
 
     def test_build_screening_log_text_formats_detailed_stock_blocks(self) -> None:
@@ -366,6 +398,46 @@ class ScreenerTelegramTests(unittest.TestCase):
         self.assertIn("*** BUMI | 238 | 8 (+5.61%) ***", send_calls[0][1])
         save_payload = save_runtime_state.call_args.args[0]
         self.assertEqual(save_payload["cycle_count"], 5)
+
+    def test_stop_telegram_worker_sends_nonaktif_message_to_alert_and_log(self) -> None:
+        send_calls: list[tuple[str, str]] = []
+
+        def _capture_send(bot_token: str, group_id: str, text: str) -> None:
+            send_calls.append((group_id, text))
+
+        with (
+            patch(
+                "ui.screener.telegram_runner.worker_state",
+                return_value={
+                    "pid": 12345,
+                    "selected_symbols": ["BUMI", "MEDC"],
+                    "interval_label": "1 hari",
+                    "ema_period": 10,
+                    "breakdown_confirm_mode": "body_breakdown",
+                    "exit_mode": "ema_breakdown",
+                    "interval_seconds": 300,
+                },
+            ),
+            patch(
+                "ui.screener.telegram_runner.load_telegram_settings",
+                return_value={
+                    "TELEGRAM_BOT_TOKEN": "token",
+                    "TELEGRAM_GROUP_ID": "alert-group",
+                    "TELEGRAM_GROUP_LOG_ID": "log-group",
+                },
+            ),
+            patch("ui.screener.telegram_runner.send_telegram_text", side_effect=_capture_send),
+            patch("ui.screener.telegram_runner.os.kill"),
+            patch("ui.screener.telegram_runner.clear_worker_state"),
+        ):
+            stopped = stop_telegram_worker()
+
+        self.assertTrue(stopped)
+        self.assertEqual(len(send_calls), 2)
+        self.assertEqual(send_calls[0][0], "alert-group")
+        self.assertEqual(send_calls[1][0], "log-group")
+        self.assertIn("Screener EMA 10 Nonaktif", send_calls[0][1])
+        self.assertIn("Status akhir: Worker dihentikan, screening nonaktif.", send_calls[0][1])
 
 
 if __name__ == "__main__":

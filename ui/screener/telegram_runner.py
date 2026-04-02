@@ -169,6 +169,11 @@ def send_telegram_text(bot_token: str, group_id: str, text: str) -> None:
     ).read()
 
 
+def _current_local_datetime() -> datetime:
+    """Return the current local datetime used for user-facing Telegram messages."""
+    return datetime.now()
+
+
 def _format_telegram_datetime(value: Any) -> str:
     """Format one user-facing Telegram timestamp like 2-April-2026 10:35:12."""
     if isinstance(value, pd.Timestamp):
@@ -186,6 +191,29 @@ def _format_telegram_datetime(value: Any) -> str:
 
     month_name = INDONESIAN_MONTH_NAMES.get(int(timestamp.month), f"{timestamp.month:02d}")
     return f"{timestamp.day}-{month_name}-{timestamp.year} {timestamp.strftime('%H:%M:%S')}"
+
+
+def _resolve_event_display_datetime(event: dict[str, Any]) -> Any:
+    """Prefer one human-friendly event time for alert messages.
+
+    Daily/weekly event timestamps often arrive as date-only values from the backtest engine.
+    In that case, keep the event date but replace the clock with the current local time so the
+    Telegram alert reflects when the signal was actually detected.
+    """
+    time_text = str(event.get("time_text", "") or "").strip()
+    if time_text and ":" not in time_text:
+        try:
+            base_datetime = pd.Timestamp(time_text).to_pydatetime()
+            current_datetime = _current_local_datetime()
+            return base_datetime.replace(
+                hour=current_datetime.hour,
+                minute=current_datetime.minute,
+                second=current_datetime.second,
+                microsecond=0,
+            )
+        except Exception:
+            return time_text
+    return event.get("time") or time_text
 
 
 def load_runtime_state() -> dict[str, Any]:
@@ -285,6 +313,15 @@ def _build_note_box_lines(note_payload: dict[str, Any] | None, action: str | Non
     return lines
 
 
+def _format_monitored_symbols(symbols: Iterable[str]) -> str:
+    normalized_symbols = [
+        str(symbol).strip().upper()
+        for symbol in symbols
+        if str(symbol).strip()
+    ]
+    return ", ".join(f"*** {symbol} ***" for symbol in normalized_symbols) if normalized_symbols else "-"
+
+
 def _build_log_stock_block(signal_snapshot: dict[str, Any]) -> str:
     row = dict(signal_snapshot.get("row") or {})
     symbol = str(row.get("symbol") or signal_snapshot.get("symbol") or "-").strip().upper()
@@ -312,9 +349,9 @@ def build_startup_message_text(config: dict[str, Any]) -> str:
         for symbol in config.get("selected_symbols", [])
         if str(symbol).strip()
     ]
-    timestamp_text = _format_telegram_datetime(datetime.now())
+    timestamp_text = _format_telegram_datetime(_current_local_datetime())
     interval_seconds = int(config.get("interval_seconds", TELEGRAM_SEND_INTERVAL_SECONDS))
-    monitored_symbols = ", ".join(f"*** {symbol} ***" for symbol in selected_symbols) if selected_symbols else "-"
+    monitored_symbols = _format_monitored_symbols(selected_symbols)
     return "\n".join(
         [
             f"Screener EMA {int(config['ema_period'])} Aktif",
@@ -326,6 +363,30 @@ def build_startup_message_text(config: dict[str, Any]) -> str:
                 f"Exit: {option_label(str(config['exit_mode']))}"
             ),
             "Status awal: worker siap kirim alert BUY/SELL baru sesuai flow backtest BREAK_EMA.",
+            "",
+            f"Saham dipantau ({len(selected_symbols)}): {monitored_symbols}",
+        ]
+    )
+
+
+def build_shutdown_message_text(config: dict[str, Any], *, reason_text: str = "Screening nonaktif.") -> str:
+    """Build one stop message sent when the screener worker is intentionally turned off."""
+    selected_symbols = [
+        str(symbol).strip().upper()
+        for symbol in config.get("selected_symbols", [])
+        if str(symbol).strip()
+    ]
+    monitored_symbols = _format_monitored_symbols(selected_symbols)
+    return "\n".join(
+        [
+            f"Screener EMA {int(config['ema_period'])} Nonaktif",
+            f"Waktu: {_format_telegram_datetime(_current_local_datetime())}",
+            f"Interval chart: {config['interval_label']}",
+            (
+                f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
+                f"Exit: {option_label(str(config['exit_mode']))}"
+            ),
+            f"Status akhir: {reason_text}",
             "",
             f"Saham dipantau ({len(selected_symbols)}): {monitored_symbols}",
         ]
@@ -347,7 +408,7 @@ def build_signal_message_text(
     price_change_text = str(row.get("price_change_text") or "-").strip()
     lines = [
         f"SINYAL {action} EMA {int(config['ema_period'])}",
-        f"Waktu Event: {_format_telegram_datetime(event.get('time') or event.get('time_text'))}",
+        f"Waktu Event: {_format_telegram_datetime(_resolve_event_display_datetime(event))}",
         f"Interval chart: {config['interval_label']}",
         (
             f"EMA: {int(config['ema_period'])} | Entry: {option_label(str(config['breakdown_confirm_mode']))} | "
@@ -378,7 +439,7 @@ def build_screening_log_text(
     cycle_count: int = 0,
 ) -> str:
     """Build one cycle log header sent to the dedicated screening log group."""
-    timestamp_text = _format_telegram_datetime(datetime.now())
+    timestamp_text = _format_telegram_datetime(_current_local_datetime())
     lines = [
         f"Waktu Cycle: {timestamp_text}",
         f"Status Cycle: {'Startup' if is_startup_cycle else f'{max(int(cycle_count), 1)} X'}",
@@ -462,12 +523,28 @@ def is_process_running(pid: int) -> bool:
     return True
 
 
-def stop_telegram_worker() -> bool:
+def stop_telegram_worker(*, send_notification: bool = True) -> bool:
     """Terminate the active Telegram worker when it is still running."""
     state = worker_state()
     if state is None:
         clear_worker_state()
         return False
+
+    if send_notification:
+        try:
+            settings = load_telegram_settings()
+            bot_token = str(settings.get("TELEGRAM_BOT_TOKEN", "")).strip()
+            alert_group_id = str(settings.get("TELEGRAM_GROUP_ID", "")).strip()
+            log_group_id = str(settings.get("TELEGRAM_GROUP_LOG_ID", "")).strip()
+            if bot_token and alert_group_id and log_group_id:
+                shutdown_text = build_shutdown_message_text(
+                    state,
+                    reason_text="Worker dihentikan, screening nonaktif.",
+                )
+                send_telegram_text(bot_token, alert_group_id, shutdown_text)
+                send_telegram_text(bot_token, log_group_id, shutdown_text)
+        except Exception:
+            pass
 
     pid = int(state["pid"])
     try:
@@ -488,7 +565,7 @@ def start_telegram_worker(
 ) -> dict[str, Any]:
     """Start one detached worker process that checks fresh BUY/SELL signals every 5 minutes."""
     ensure_runtime_dir()
-    stop_telegram_worker()
+    stop_telegram_worker(send_notification=False)
     clear_runtime_state()
 
     normalized_symbols = [
@@ -602,6 +679,7 @@ __all__ = [
     "build_selected_screener_dataframe",
     "build_screening_log_text",
     "build_screening_log_chunks",
+    "build_shutdown_message_text",
     "build_signal_message_text",
     "build_startup_message_text",
     "clear_worker_state",
